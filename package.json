@@ -1,0 +1,22 @@
+{
+  "name": "glove-box",
+  "version": "1.0.0",
+  "description": "Sleek local-first automotive maintenance and receipt tracking web application",
+  "main": "server/server.js",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client",
+    "server": "node server/server.js",
+    "client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "build": "npm run build --prefix client"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true,
+  "author": "Antigravity",
+  "license": "MIT"
+}

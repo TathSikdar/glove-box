@@ -1,0 +1,40 @@
+# ==========================================
+# GloveBox Git Ignore Configurations
+# ==========================================
+
+# Node modules (Root, Client, and Server)
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Production builds
+client/dist/
+
+# SQLite databases & journals
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-journal
+
+# Local storage and persistent mounted data directories
+data/
+server/uploads/
+/uploads/
+
+# Environment configurations
+.env
+.env.local
+.env.production
+.env.development
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
