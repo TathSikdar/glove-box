@@ -401,3 +401,196 @@ export function applyGrayscaleFilter(imageData) {
 
   return outputData;
 }
+
+export function autoDetectDocumentCorners(img) {
+  // Use a small offscreen canvas for extremely fast pixel operations (~0.2ms)
+  const w = 240;
+  const h = 320;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+
+  // 1. Convert color channels to grayscaled luminance
+  const gray = new Uint8Array(w * h);
+  for (let i = 0; i < data.length; i += 4) {
+    gray[i / 4] = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+  }
+
+  // 2. Bradley-Roth O(N) Adaptive Thresholding (via integral image)
+  // Perfectly handles variable gradients, uneven lighting, notches, and shadows.
+  const S = Math.round(w / 8); // Local block window width
+  const T = 0.15; // Threshold percentage
+  const intImg = new Int32Array(w * h);
+  
+  // Compute the integral image (summed-area table)
+  for (let y = 0; y < h; y++) {
+    let sum = 0;
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      sum += gray[idx];
+      if (y === 0) {
+        intImg[idx] = sum;
+      } else {
+        intImg[idx] = intImg[idx - w] + sum;
+      }
+    }
+  }
+
+  // Binarize the grayscale image adaptively
+  const binary = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      
+      const x1 = Math.max(0, x - Math.floor(S / 2));
+      const x2 = Math.min(w - 1, x + Math.floor(S / 2));
+      const y1 = Math.max(0, y - Math.floor(S / 2));
+      const y2 = Math.min(h - 1, y + Math.floor(S / 2));
+      
+      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+      
+      let sum = intImg[y2 * w + x2];
+      if (x1 > 0) sum -= intImg[y2 * w + (x1 - 1)];
+      if (y1 > 0) sum -= intImg[(y1 - 1) * w + x2];
+      if (x1 > 0 && y1 > 0) sum += intImg[(y1 - 1) * w + (x1 - 1)];
+      
+      if (gray[idx] * count < sum * (1.0 - T)) {
+        binary[idx] = 0; // Dark background
+      } else {
+        binary[idx] = 255; // Bright paper foreground
+      }
+    }
+  }
+
+  // 3. Connected-Component Labeler (Connected Blob Flood Fill)
+  // Isolates the receipt paper itself and completely filters out ambient desk clutter or high frequency noise.
+  // Masks out the outer 3% margin to ignore fingers, scanning bezels, or image border artifacts.
+  const borderX = Math.round(w * 0.03);
+  const borderY = Math.round(h * 0.03);
+  
+  const labels = new Int32Array(w * h);
+  let nextLabel = 1;
+  const labelSizes = {};
+  
+  // Flat stack to prevent JS call stack overflows during DFS/BFS operations
+  const stack = new Int32Array(w * h);
+
+  for (let y = borderY; y < h - borderY; y++) {
+    for (let x = borderX; x < w - borderX; x++) {
+      const startIdx = y * w + x;
+      
+      // If it is foreground and not yet labeled
+      if (binary[startIdx] === 255 && labels[startIdx] === 0) {
+        const currentLabel = nextLabel++;
+        let size = 0;
+        
+        let stackPtr = 0;
+        stack[stackPtr++] = startIdx;
+        labels[startIdx] = currentLabel;
+        
+        while (stackPtr > 0) {
+          const idx = stack[--stackPtr];
+          size++;
+          
+          const px = idx % w;
+          const py = Math.floor(idx / w);
+          
+          // Explore 4-connected neighbors
+          const neighbors = [idx - 1, idx + 1, idx - w, idx + w];
+          for (let i = 0; i < neighbors.length; i++) {
+            const nIdx = neighbors[i];
+            const nx = nIdx % w;
+            const ny = Math.floor(nIdx / w);
+            
+            // Stay within border margins and valid boundaries
+            if (nx >= borderX && nx < w - borderX && ny >= borderY && ny < h - borderY) {
+              if (binary[nIdx] === 255 && labels[nIdx] === 0) {
+                labels[nIdx] = currentLabel;
+                stack[stackPtr++] = nIdx;
+              }
+            }
+          }
+        }
+        
+        labelSizes[currentLabel] = size;
+      }
+    }
+  }
+
+  // Find the largest foreground connected component label
+  let largestLabel = 0;
+  let maxSize = 0;
+  for (const label in labelSizes) {
+    if (labelSizes[label] > maxSize) {
+      maxSize = labelSizes[label];
+      largestLabel = parseInt(label, 10);
+    }
+  }
+
+  // 4. Extract exact document quad corners based on the isolated largest component
+  // TL: minimizes x + y
+  // TR: maximizes x - y
+  // BR: maximizes x + y
+  // BL: minimizes x - y
+  let minSum = Infinity, tl = { x: 0.12, y: 0.12 };
+  let maxDiff = -Infinity, tr = { x: 0.88, y: 0.12 };
+  let maxSum = -Infinity, br = { x: 0.88, y: 0.88 };
+  let minDiff = Infinity, bl = { x: 0.12, y: 0.88 };
+
+  const minAcceptableSize = w * h * 0.05; // Fallback if document is less than 5% of screen
+  
+  if (largestLabel > 0 && maxSize >= minAcceptableSize) {
+    for (let y = borderY; y < h - borderY; y++) {
+      for (let x = borderX; x < w - borderX; x++) {
+        const idx = y * w + x;
+        if (labels[idx] === largestLabel) {
+          const sum = x + y;
+          const diff = x - y;
+
+          if (sum < minSum) {
+            minSum = sum;
+            tl = { x: x / w, y: y / h };
+          }
+          if (diff > maxDiff) {
+            maxDiff = diff;
+            tr = { x: x / w, y: y / h };
+          }
+          if (sum > maxSum) {
+            maxSum = sum;
+            br = { x: x / w, y: y / h };
+          }
+          if (diff < minDiff) {
+            minDiff = diff;
+            bl = { x: x / w, y: y / h };
+          }
+        }
+      }
+    }
+  } else {
+    // Return standard preset layout boundaries if no valid paper block is isolated
+    const inset = 0.12;
+    return [
+      { x: inset, y: inset },
+      { x: 1.0 - inset, y: inset },
+      { x: 1.0 - inset, y: 1.0 - inset },
+      { x: inset, y: 1.0 - inset }
+    ];
+  }
+
+  // 5. Apply a high-end 1.5% inset polish
+  // Pushing corners slightly inside the detected paper limits prevents dark desk pixels from leaking on the scan borders.
+  const insetFactor = 0.015;
+  const finalCorners = [
+    { x: tl.x + insetFactor, y: tl.y + insetFactor },
+    { x: tr.x - insetFactor, y: tr.y + insetFactor },
+    { x: br.x - insetFactor, y: br.y - insetFactor },
+    { x: bl.x + insetFactor, y: bl.y - insetFactor }
+  ];
+
+  return finalCorners;
+}

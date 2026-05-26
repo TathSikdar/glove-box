@@ -11,7 +11,8 @@ import {
   warpPerspective,
   applyColorScanFilter,
   applyBWScanFilter,
-  applyGrayscaleFilter
+  applyGrayscaleFilter,
+  autoDetectDocumentCorners
 } from '../utils/scannerUtils';
 
 /**
@@ -29,6 +30,7 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
   const magnifierCanvasRef = useRef(null);
 
   // Core scanner states
+  const [currentImageSrc, setCurrentImageSrc] = useState(imageSrc);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [naturalDim, setNaturalDim] = useState({ width: 0, height: 0 });
   const [displayDim, setDisplayDim] = useState({ width: 0, height: 0 });
@@ -42,24 +44,59 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
   // State for magnifier visibility and coordinate tracing
   const [magnifier, setMagnifier] = useState({ show: false, x: 0, y: 0, handleX: 0, handleY: 0 });
 
+  // Store normalized corners in a Ref to prevent re-render loop on dragging,
+  // while keeping handles beautifully responsive on resize or screen rotation.
+  const normalizedCornersRef = useRef([]);
+
+  // Sync prop changes
+  useEffect(() => {
+    setCurrentImageSrc(imageSrc);
+  }, [imageSrc]);
+
+  // Clean up rotated object URLs
+  useEffect(() => {
+    return () => {
+      if (currentImageSrc && currentImageSrc.startsWith('blob:') && currentImageSrc !== imageSrc) {
+        URL.revokeObjectURL(currentImageSrc);
+      }
+    };
+  }, [currentImageSrc, imageSrc]);
+
   // Initialize and load the receipt image
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
       setNaturalDim({ width: img.width, height: img.height });
       imageRef.current = img;
+
+      // Run automatic receipt edge and corner detection
+      try {
+        const detected = autoDetectDocumentCorners(img);
+        normalizedCornersRef.current = detected;
+      } catch (err) {
+        console.error('[Scanner] Automatic border detection failed, using defaults:', err);
+        const inset = 0.12;
+        normalizedCornersRef.current = [
+          { x: inset, y: inset },
+          { x: 1.0 - inset, y: inset },
+          { x: 1.0 - inset, y: 1.0 - inset },
+          { x: inset, y: 1.0 - inset }
+        ];
+      }
+
       setImageLoaded(true);
     };
-    img.src = imageSrc;
-  }, [imageSrc]);
+    img.src = currentImageSrc;
+  }, [currentImageSrc]);
 
-  // Handle responsive canvas sizing and default crop handle positions
+  // Handle responsive canvas sizing and map crop handle positions
   useEffect(() => {
     if (!imageLoaded || !containerRef.current) return;
 
     const resizeHandler = () => {
       const containerW = containerRef.current.clientWidth;
-      const containerH = containerRef.current.clientHeight - 180; // Subtract padding for buttons
+      const isMobile = window.innerWidth <= 768;
+      const containerH = containerRef.current.clientHeight - (isMobile ? 260 : 180); // Subtract padding for buttons
 
       const imgW = naturalDim.width;
       const imgH = naturalDim.height;
@@ -71,16 +108,14 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
 
       setDisplayDim({ width: dispW, height: dispH });
 
-      // Initialize default corners with 15% inset from borders
-      const insetX = Math.round(dispW * 0.15);
-      const insetY = Math.round(dispH * 0.15);
-
-      setCorners([
-        { x: insetX, y: insetY },                  // Top-Left (TL)
-        { x: dispW - insetX, y: insetY },          // Top-Right (TR)
-        { x: dispW - insetX, y: dispH - insetY },  // Bottom-Right (BR)
-        { x: insetX, y: dispH - insetY }           // Bottom-Left (BL)
-      ]);
+      // Map normalized corners to active display dimensions
+      if (normalizedCornersRef.current && normalizedCornersRef.current.length === 4) {
+        const mapped = normalizedCornersRef.current.map((nc) => ({
+          x: Math.round(nc.x * dispW),
+          y: Math.round(nc.y * dispH)
+        }));
+        setCorners(mapped);
+      }
     };
 
     resizeHandler();
@@ -265,12 +300,50 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
     updatedCorners[activeCornerIdx] = { x, y };
     setCorners(updatedCorners);
 
+    // Sync manual adjustments back to normalized coordinates ref
+    if (normalizedCornersRef.current && normalizedCornersRef.current.length === 4) {
+      normalizedCornersRef.current[activeCornerIdx] = {
+        x: x / displayDim.width,
+        y: y / displayDim.height
+      };
+    }
+
     updateMagnifier(x, y, clientX, clientY);
   };
 
   const handlePointerUp = () => {
     setActiveCornerIdx(null);
     setMagnifier((prev) => ({ ...prev, show: false }));
+  };
+
+  /**
+   * Rotates the image physically 90 degrees clockwise using an offscreen canvas.
+   */
+  const handleRotate = () => {
+    if (!imageRef.current) return;
+
+    const img = imageRef.current;
+    const offCanvas = document.createElement('canvas');
+    // Swap width and height
+    offCanvas.width = img.height;
+    offCanvas.height = img.width;
+
+    const ctx = offCanvas.getContext('2d');
+    ctx.translate(offCanvas.width / 2, offCanvas.height / 2);
+    ctx.rotate((90 * Math.PI) / 180);
+    ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+    offCanvas.toBlob((blob) => {
+      if (blob) {
+        const newUrl = URL.createObjectURL(blob);
+        // Clean up previous blob url
+        if (currentImageSrc && currentImageSrc.startsWith('blob:') && currentImageSrc !== imageSrc) {
+          URL.revokeObjectURL(currentImageSrc);
+        }
+        setCurrentImageSrc(newUrl);
+        setImageLoaded(false);
+      }
+    }, 'image/jpeg', 0.95);
   };
 
   /**
@@ -354,7 +427,11 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
           <h3>Receipt Document Scanner</h3>
           <p>Drag the corner anchors to fit the invoice receipt boundary</p>
         </div>
-        <div style={{ width: '40px' }}></div> {/* Spacer */}
+        <button type="button" className="btn-icon" onClick={handleRotate} title="Rotate 90° Clockwise">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'scaleX(-1)' }}>
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+          </svg>
+        </button>
       </div>
 
       {/* Main Image display and interactive canvas container */}
@@ -378,7 +455,7 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
           >
             {/* Base Image */}
             <img
-              src={imageSrc}
+              src={currentImageSrc}
               alt="Scan Target"
               className="scanner-img-base"
               style={{ width: displayDim.width, height: displayDim.height }}

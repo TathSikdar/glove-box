@@ -61,6 +61,18 @@ export default function App() {
 
   const [isLoading, setIsLoading] = useState(true);
 
+  // Navigation layout preference state (remembers bottom vs top preference in local storage)
+  const [navPosition, setNavPosition] = useState(() => {
+    const saved = localStorage.getItem('glovebox_nav_position');
+    if (saved) return saved;
+    // Defaults to bottom navigation on phone viewports for optimal mobile clearance
+    return window.innerWidth <= 768 ? 'bottom' : 'top';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('glovebox_nav_position', navPosition);
+  }, [navPosition]);
+
   // 1. Initial Load: Fetch registered vehicles and determine active selection
   useEffect(() => {
     const loadInitialData = async () => {
@@ -372,7 +384,7 @@ export default function App() {
   const activeCar = cars.find((c) => c.id === activeCarId);
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${navPosition === 'bottom' ? 'nav-bottom-layout' : ''}`}>
       {/* 1. Header Navigation Bar */}
       <header className="app-header header-glass">
         <div className="header-inner">
@@ -393,87 +405,133 @@ export default function App() {
 
             {/* Custom Interactive Car Dropdown Switcher */}
             {activeCar && (
-              <div className="car-switcher-wrapper" onClick={(e) => e.stopPropagation()}>
-                <button
-                  type="button"
-                  className="car-switcher-btn"
-                  onClick={() => setShowCarDropdown(!showCarDropdown)}
-                  title="Switch Vehicle"
-                >
-                  <span className="car-btn-text">🚗 {activeCar.year} {activeCar.make} {activeCar.model}</span>
-                  <svg
-                    width="12" height="12" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="3"
-                    style={{
-                      transform: showCarDropdown ? 'rotate(180deg)' : 'none',
-                      transition: 'transform 0.25s ease',
-                      marginLeft: '6px'
-                    }}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} onClick={(e) => e.stopPropagation()}>
+                <div className="car-switcher-wrapper">
+                  <button
+                    type="button"
+                    className="car-switcher-btn"
+                    onClick={() => setShowCarDropdown(!showCarDropdown)}
+                    title="Switch Vehicle"
                   >
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </button>
-
-                {showCarDropdown && (
-                  <div className="car-dropdown-list card-glass fade-in">
-                    <div className="car-dropdown-scrollable">
-                      {cars.map((car) => (
-                        <div
-                          key={car.id}
-                          className={`car-dropdown-item ${car.id === activeCarId ? 'active' : ''}`}
-                          onClick={() => {
-                            setActiveCarId(car.id);
-                            localStorage.setItem('glovebox_active_car_id', car.id);
-                            setShowCarDropdown(false);
-                          }}
-                        >
-                          <span className="car-name-text">{car.year} {car.make} {car.model}</span>
-                          <div className="car-item-actions" style={{ display: 'flex', gap: '6px' }}>
-                            <button
-                              type="button"
-                              className="car-item-edit-btn"
-                              onClick={(e) => {
-                                e.stopPropagation(); // Avoid switching active car
-                                setCarToEdit(car);
-                                setShowCarModal(true);
-                              }}
-                              title="Edit Vehicle Specs"
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                <path d="M12 20h9"></path>
-                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-                              </svg>
-                            </button>
-                            {cars.length > 1 && (
-                              <button
-                                type="button"
-                                className="car-item-delete-btn"
-                                onClick={(e) => initiateCarDeleteFlow(car, e)}
-                                title="Delete Vehicle"
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                  <polyline points="3 6 5 6 21 6"></polyline>
-                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                                </svg>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="car-dropdown-divider" />
-                    <button
-                      type="button"
-                      className="car-dropdown-add-btn"
-                      onClick={() => {
-                        setShowCarDropdown(false);
-                        setShowCarModal(true);
+                    <span className="car-btn-text">🚗 {activeCar.year} {activeCar.make} {activeCar.model}</span>
+                    <svg
+                      width="12" height="12" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="3"
+                      style={{
+                        transform: showCarDropdown ? 'rotate(180deg)' : 'none',
+                        transition: 'transform 0.25s ease',
+                        marginLeft: '6px'
                       }}
                     >
-                      ➕ Add New Vehicle
-                    </button>
-                  </div>
-                )}
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </button>
+
+                  {showCarDropdown && (
+                    <div className="car-dropdown-list card-glass fade-in">
+                      <div className="car-dropdown-scrollable">
+                        {cars.map((car) => (
+                          <div
+                            key={car.id}
+                            className={`car-dropdown-item ${car.id === activeCarId ? 'active' : ''}`}
+                            onClick={() => {
+                              setActiveCarId(car.id);
+                              localStorage.setItem('glovebox_active_car_id', car.id);
+                              setShowCarDropdown(false);
+                            }}
+                          >
+                            <span className="car-name-text">{car.year} {car.make} {car.model}</span>
+                            <div className="car-item-actions" style={{ display: 'flex', gap: '6px' }}>
+                              <button
+                                type="button"
+                                className="car-item-edit-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation(); // Avoid switching active car
+                                  setCarToEdit(car);
+                                  setShowCarModal(true);
+                                }}
+                                title="Edit Vehicle Specs"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                  <path d="M12 20h9"></path>
+                                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                                </svg>
+                              </button>
+                              {cars.length > 1 && (
+                                <button
+                                  type="button"
+                                  className="car-item-delete-btn"
+                                  onClick={(e) => initiateCarDeleteFlow(car, e)}
+                                  title="Delete Vehicle"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="car-dropdown-divider" />
+                      <button
+                        type="button"
+                        className="car-dropdown-add-btn"
+                        onClick={() => {
+                          setShowCarDropdown(false);
+                          setShowCarModal(true);
+                        }}
+                      >
+                        ➕ Add New Vehicle
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Quick Toggle to Switch Navigation Bar between Top and Bottom (Mobile Clearances) */}
+                <button
+                  type="button"
+                  className="btn-icon header-nav-toggle"
+                  onClick={() => setNavPosition(navPosition === 'top' ? 'bottom' : 'top')}
+                  title={navPosition === 'top' ? 'Move Navigation Menu to Bottom' : 'Move Navigation Menu to Top'}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid var(--border-glass)',
+                    color: 'var(--text-secondary)',
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: 'var(--shadow-button)'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = 'var(--neon-teal)';
+                    e.currentTarget.style.borderColor = 'rgba(0, 242, 254, 0.3)';
+                    e.currentTarget.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.15)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = 'var(--text-secondary)';
+                    e.currentTarget.style.borderColor = 'var(--border-glass)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                >
+                  {navPosition === 'top' ? (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <polyline points="19 12 12 19 5 12"></polyline>
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="12" y1="19" x2="12" y2="5"></line>
+                      <polyline points="5 12 12 5 19 12"></polyline>
+                    </svg>
+                  )}
+                </button>
               </div>
             )}
           </div>

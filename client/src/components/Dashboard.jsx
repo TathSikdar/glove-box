@@ -71,6 +71,8 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
     const isDaysOverdue = oilChangeDueInDays <= 0;
     isOverdue = isKmsOverdue || isDaysOverdue;
 
+    const nextChangeDueAtKms = lastOilChangeKms + OIL_CHANGE_INTERVAL;
+
     if (isOverdue) {
       oilChangePercentage = 0;
       gaugeColor = 'var(--error-red)';
@@ -79,8 +81,8 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
         remainingKmsDisplay = 'Overdue';
         gaugeLabelDisplay = 'Kms & Time Exceeded';
       } else if (isKmsOverdue) {
-        remainingKmsDisplay = `${Math.abs(oilChangeDueInKms).toLocaleString()} km`;
-        gaugeLabelDisplay = 'Overdue by Mileage';
+        remainingKmsDisplay = `${nextChangeDueAtKms.toLocaleString()} km`;
+        gaugeLabelDisplay = 'Overdue (Due At)';
       } else {
         remainingKmsDisplay = `${Math.abs(oilChangeDueInDays)} days`;
         gaugeLabelDisplay = 'Overdue by Time';
@@ -89,8 +91,8 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
       // Not overdue, select the one closer to expiration (smaller percentage)
       if (pctKms <= pctDays) {
         oilChangePercentage = pctKms;
-        remainingKmsDisplay = `${oilChangeDueInKms.toLocaleString()} km`;
-        gaugeLabelDisplay = 'Left (Mileage)';
+        remainingKmsDisplay = `${nextChangeDueAtKms.toLocaleString()} km`;
+        gaugeLabelDisplay = 'Due at Odometer';
       } else {
         oilChangePercentage = pctDays;
         remainingKmsDisplay = `${oilChangeDueInDays} days`;
@@ -171,19 +173,12 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
                   marginBottom: '8px'
                 }}>
                   {/* Mileage row */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                      <span>🚗 Odometer Status</span>
-                      <span>{elapsedKms.toLocaleString()} / {OIL_CHANGE_INTERVAL.toLocaleString()} km</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '11px', opacity: 0.7 }}>{elapsedKms.toLocaleString()} km driven since last service</span>
-                      <strong style={{ color: oilChangeDueInKms <= 0 ? 'var(--error-red)' : 'var(--neon-teal)', fontSize: '13px' }}>
-                        {oilChangeDueInKms <= 0 
-                          ? `Overdue by ${Math.abs(oilChangeDueInKms).toLocaleString()} km` 
-                          : `${oilChangeDueInKms.toLocaleString()} km left`}
-                      </strong>
-                    </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>🚗 Odometer Status</span>
+                    <strong style={{ color: oilChangeDueInKms <= 0 ? 'var(--error-red)' : 'var(--neon-teal)', fontSize: '13px' }}>
+                      Due at {(lastOilChangeKms + OIL_CHANGE_INTERVAL).toLocaleString()} km
+                      {oilChangeDueInKms <= 0 && ' (Overdue)'}
+                    </strong>
                   </div>
 
                   <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.08)' }} />

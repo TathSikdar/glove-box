@@ -36,6 +36,8 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
   const [showScanner, setShowScanner] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [showPreviewLightbox, setShowPreviewLightbox] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
 
   const categoriesList = [
     { value: 'oil_change', label: 'Oil Change' },
@@ -177,6 +179,14 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
       URL.revokeObjectURL(rawImageSrc);
     }
     setRawImageSrc(null);
+  };
+
+  /**
+   * Closes the receipt preview lightbox and resets zoom parameters.
+   */
+  const closePreviewLightbox = () => {
+    setShowPreviewLightbox(false);
+    setZoomScale(1);
   };
 
   /**
@@ -421,18 +431,6 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
               </div>
             </div>
 
-            {/* Notes */}
-            <div className="form-group mt-4">
-              <label htmlFor="notes">Notes / Observations</label>
-              <textarea
-                id="notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="List specs, oil filters used, tire positions, aftermarket parts part numbers..."
-                rows="4"
-              />
-            </div>
-
             {/* Receipt upload - Camera focus */}
             {!editRecord && (
               <div className="form-group mt-6">
@@ -440,7 +438,13 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
                 
                 {receiptPreviewUrl ? (
                   <div className="receipt-preview-card card-glass mt-2">
-                    <img src={receiptPreviewUrl} alt="Scanned Receipt Preview" className="receipt-preview-thumbnail" />
+                    <img
+                      src={receiptPreviewUrl}
+                      alt="Scanned Receipt Preview"
+                      className="receipt-preview-thumbnail"
+                      onClick={() => setShowPreviewLightbox(true)}
+                      title="Tap to Zoom Receipt"
+                    />
                     <div className="receipt-preview-details">
                       <span className="scanned-badge">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -484,6 +488,18 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
               </div>
             )}
 
+            {/* Notes */}
+            <div className="form-group mt-6">
+              <label htmlFor="notes">Notes / Observations</label>
+              <textarea
+                id="notes"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="List specs, oil filters used, tire positions, aftermarket parts part numbers..."
+                rows="4"
+              />
+            </div>
+
             {/* Actions */}
             <div className="form-actions mt-8">
               <button
@@ -526,6 +542,54 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
             }
           }}
         />
+      )}
+
+      {/* Scanned Receipt Preview Full-Screen Lightbox */}
+      {showPreviewLightbox && (
+        <div className="lightbox-modal" onClick={closePreviewLightbox} style={{ zIndex: 30000 }}>
+          {/* Close button top right */}
+          <button type="button" className="lightbox-close-btn" onClick={closePreviewLightbox}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+
+          {/* Bottom Zoom Controls */}
+          <div className="lightbox-controls-overlay" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="btn-circle" onClick={() => setZoomScale((z) => Math.max(z - 0.5, 1))} disabled={zoomScale <= 1}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+            <span className="zoom-indicator">{Math.round(zoomScale * 100)}%</span>
+            <button type="button" className="btn-circle" onClick={() => setZoomScale((z) => Math.min(z + 0.5, 4))} disabled={zoomScale >= 4}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+          </div>
+
+          {/* Interactive Image Viewport */}
+          <div className="lightbox-viewport">
+            <div
+              className="lightbox-img-wrapper"
+              style={{
+                transform: `scale(${zoomScale})`,
+                transition: 'transform 0.15s ease-out'
+              }}
+            >
+              <img
+                src={receiptPreviewUrl}
+                alt="Enlarged Scanned Invoice Preview"
+                className="lightbox-image"
+                style={{ pointerEvents: 'auto', maxWidth: '90vw', maxHeight: '85vh' }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

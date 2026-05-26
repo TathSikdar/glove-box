@@ -5,7 +5,7 @@
  * Follows Google Coding Standards and React best practices.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import CategoryIcon from './CategoryIcon';
 
 /**
@@ -27,6 +27,23 @@ export default function RecordList({ records, onDelete, onEdit }) {
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+
+  // Refs for high-performance touch gestures and zoom tracking
+  const pinchStartDist = useRef(0);
+  const pinchStartScale = useRef(1);
+  const lastTapTime = useRef(0);
+
+  // Disable body scroll when lightbox is active to keep fixed centering stable on iOS/Android
+  useEffect(() => {
+    if (lightboxImg) {
+      document.body.classList.add('no-scroll');
+    } else {
+      document.body.classList.remove('no-scroll');
+    }
+    return () => {
+      document.body.classList.remove('no-scroll');
+    };
+  }, [lightboxImg]);
 
   /**
    * Toggles the card expanded notes drawer.
@@ -115,17 +132,57 @@ export default function RecordList({ records, onDelete, onEdit }) {
     setIsPanning(false);
   };
 
-  // Convert touch events to generic coordinates for phone support
+  // Advanced multi-touch pinch, drag, and double-tap zoom handlers
   const handleTouchStart = (e) => {
-    if (e.touches.length === 1) {
-      handlePanStart(e.touches[0].clientX, e.touches[0].clientY);
+    if (e.touches.length === 2) {
+      // Initialize pinch-to-zoom parameters
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      pinchStartDist.current = dist;
+      pinchStartScale.current = zoomScale;
+      setIsPanning(false); // Lock drag panning while adjusting pinch scale
+    } else if (e.touches.length === 1) {
+      // Tap & Drag / Double-tap detection
+      const now = Date.now();
+      if (now - lastTapTime.current < 260) {
+        // Double-tap zoom toggle (swaps between 1x and 2.5x)
+        if (zoomScale > 1) {
+          setZoomScale(1);
+          setPanOffset({ x: 0, y: 0 });
+        } else {
+          setZoomScale(2.5);
+          setPanOffset({ x: 0, y: 0 });
+        }
+        lastTapTime.current = 0; // Reset
+      } else {
+        lastTapTime.current = now;
+        handlePanStart(e.touches[0].clientX, e.touches[0].clientY);
+      }
     }
   };
 
   const handleTouchMove = (e) => {
-    if (e.touches.length === 1) {
+    if (e.touches.length === 2 && pinchStartDist.current > 0) {
+      // Pinch calculation
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const nextScale = Math.min(4, Math.max(1, pinchStartScale.current * (dist / pinchStartDist.current)));
+      setZoomScale(nextScale);
+      if (nextScale <= 1) {
+        setPanOffset({ x: 0, y: 0 });
+      }
+    } else if (e.touches.length === 1) {
       handlePanMove(e.touches[0].clientX, e.touches[0].clientY);
     }
+  };
+
+  const handleTouchEnd = () => {
+    pinchStartDist.current = 0;
+    handlePanEnd();
   };
 
   return (
@@ -305,21 +362,6 @@ export default function RecordList({ records, onDelete, onEdit }) {
                     <div className="expanded-divider" />
                     
                     <div className="expanded-grid">
-                      {/* Notes / Descriptions */}
-                      <div className="expanded-left">
-                        <h5>Description & Observations</h5>
-                        <p className="notes-text text-sm">
-                          {record.notes ? record.notes : <em className="text-secondary">No notes written.</em>}
-                        </p>
-                        
-                        <div className="expanded-stats mt-4">
-                          <div className="cost-stat">
-                            <span className="stat-label">Total Expense:</span>
-                            <span className="stat-val">${record.cost.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      </div>
-
                       {/* Receipt Photo */}
                       {record.receipt_image && (
                         <div className="expanded-right">
@@ -345,6 +387,21 @@ export default function RecordList({ records, onDelete, onEdit }) {
                           </div>
                         </div>
                       )}
+
+                      {/* Notes / Descriptions */}
+                      <div className="expanded-left">
+                        <h5>Description & Observations</h5>
+                        <p className="notes-text text-sm">
+                          {record.notes ? record.notes : <em className="text-secondary">No notes written.</em>}
+                        </p>
+                        
+                        <div className="expanded-stats mt-4">
+                          <div className="cost-stat">
+                            <span className="stat-label">Total Expense:</span>
+                            <span className="stat-val">${record.cost.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
                     {/* Actions Panel */}
@@ -408,7 +465,7 @@ export default function RecordList({ records, onDelete, onEdit }) {
             <div
               className="lightbox-img-wrapper"
               style={{
-                transform: `scale(${zoomScale}) translate(${panOffset.x / zoomScale}px, ${panOffset.y / zoomScale}px)`,
+                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomScale})`,
                 cursor: zoomScale > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
                 transition: isPanning ? 'none' : 'transform 0.15s ease-out'
               }}
@@ -435,7 +492,7 @@ export default function RecordList({ records, onDelete, onEdit }) {
               }}
               onTouchEnd={(e) => {
                 e.stopPropagation();
-                handlePanEnd();
+                handleTouchEnd();
               }}
             >
               <img
