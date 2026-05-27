@@ -1,7 +1,7 @@
 # ==========================================
 # Stage 1: Build the React client
 # ==========================================
-FROM node:18-alpine AS client-builder
+FROM node:22-alpine AS client-builder
 
 WORKDIR /app/client
 
@@ -18,7 +18,7 @@ RUN npm run build
 # ==========================================
 # Stage 2: Set up the Express server
 # ==========================================
-FROM node:18-alpine AS runner
+FROM node:22-alpine AS runner
 
 ENV NODE_ENV=production
 WORKDIR /app
