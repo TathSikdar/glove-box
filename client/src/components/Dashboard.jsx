@@ -17,7 +17,7 @@ import CategoryIcon from './CategoryIcon';
  * @param {function(string): void} props.setView Setter to trigger page views.
  * @return {!React.ReactElement}
  */
-export default function Dashboard({ stats, recentRecords, setView, onEditCar }) {
+export default function Dashboard({ stats, recentRecords, records = [], activeCar = null, setView, onEditCar }) {
   const {
     currentKms,
     totalCost,
@@ -34,6 +34,401 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
   // Configuration settings for oil change gauge (reads custom car specs)
   const OIL_CHANGE_INTERVAL = oilInterval || 8000;
   const OIL_CHANGE_MONTHS = oilMonths || 6;
+
+  /**
+   * Generates and downloads a clean, sanitised CSV spreadsheet file
+   * containing the complete maintenance records for the active vehicle.
+   */
+  const downloadCSV = () => {
+    if (!activeCar || records.length === 0) return;
+    
+    const headers = [
+      'Date',
+      'Category',
+      'Odometer Reading (km)',
+      'Cost ($)',
+      'Title / Task',
+      'Notes & Observations',
+      'Scanned Receipt File'
+    ];
+    
+    // Process rows with CSV escapes for quotes and commas
+    const rows = records.map((record) => {
+      const dateStr = record.date;
+      const categoryStr = record.category.toUpperCase().replace(/_/g, ' ');
+      const kmsStr = record.kms;
+      const costStr = record.cost.toFixed(2);
+      
+      // Escape inner quotes by doubling them, wrap values containing quotes or commas in double quotes
+      const cleanTitle = `"${record.title.replace(/"/g, '""')}"`;
+      const cleanNotes = `"${(record.notes || '').replace(/"/g, '""')}"`;
+      const receiptStr = record.receipt_image 
+        ? `"${window.location.origin}/uploads/${record.receipt_image}"` 
+        : '"None"';
+      
+      return [dateStr, categoryStr, kmsStr, costStr, cleanTitle, cleanNotes, receiptStr].join(',');
+    });
+    
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n'); // Add UTF-8 BOM
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `glovebox_${activeCar.year}_${activeCar.make}_${activeCar.model}_service_history.csv`.toLowerCase().replace(/\s+/g, '_');
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * Compiles and opens an immersive, print-ready HTML service history report
+   * in a new browser tab, automatically prompting the browser print dial.
+   */
+  const generatePrintableReport = () => {
+    if (!activeCar) return;
+    
+    const reportWindow = window.open('', '_blank');
+    if (!reportWindow) {
+      alert('Pop-up blocked! Please allow pop-ups for GloveBox to open the service report.');
+      return;
+    }
+    
+    // Generate beautiful list of records
+    const recordsRows = records.map((r) => `
+      <tr>
+        <td><strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong></td>
+        <td><span class="badge badge-${r.category}">${r.category.toUpperCase().replace(/_/g, ' ')}</span></td>
+        <td><strong>${r.kms.toLocaleString()} km</strong></td>
+        <td class="text-right"><strong>$${r.cost.toFixed(2)}</strong></td>
+        <td>
+          <div class="row-title">${r.title}</div>
+          ${r.notes ? `<div class="row-notes">${r.notes}</div>` : ''}
+        </td>
+      </tr>
+    `).join('');
+    
+    // Generate scanned receipts annex images
+    const receiptRecords = records.filter(r => r.receipt_image);
+    const receiptsAnnex = receiptRecords.map((r, index) => `
+      <div class="receipt-print-card">
+        <div class="receipt-print-header">
+          <h3>Receipt #${index + 1}: ${r.title}</h3>
+          <p>Logged Odometer: <strong>${r.kms.toLocaleString()} km</strong> | Date: <strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong> | Cost: <strong>$${r.cost.toFixed(2)}</strong></p>
+        </div>
+        <div class="receipt-print-image-container">
+          <img src="/uploads/${r.receipt_image}" alt="Receipt crop for ${r.title}" />
+        </div>
+      </div>
+    `).join('');
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <title>GloveBox Service Dossier - ${activeCar.year} ${activeCar.make} ${activeCar.model}</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+          
+          :root {
+            --bg-color: #ffffff;
+            --text-color: #0f172a;
+            --border-color: #e2e8f0;
+            --primary-color: #0f172a;
+            --accent-color: #0d9488;
+            --muted-color: #64748b;
+          }
+          
+          body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 40px;
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          
+          .report-header {
+            border-bottom: 2px solid var(--primary-color);
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+          }
+          
+          .report-header h1 {
+            font-size: 28px;
+            font-weight: 800;
+            margin: 0 0 5px 0;
+            letter-spacing: -0.5px;
+          }
+          
+          .report-header .vehicle-details {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--accent-color);
+            margin: 0;
+          }
+          
+          .report-meta {
+            text-align: right;
+            font-size: 12px;
+            color: var(--muted-color);
+          }
+          
+          .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 40px;
+          }
+          
+          .summary-card {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px 20px;
+            background: #f8fafc;
+          }
+          
+          .summary-card .label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--muted-color);
+            margin-bottom: 5px;
+            font-weight: 600;
+          }
+          
+          .summary-card .val {
+            font-size: 20px;
+            font-weight: 700;
+            margin: 0;
+          }
+          
+          h2.section-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 40px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+          }
+          
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 40px;
+          }
+          
+          th {
+            text-align: left;
+            padding: 12px 10px;
+            border-bottom: 2px solid var(--border-color);
+            font-weight: 700;
+            font-size: 12px;
+            color: var(--muted-color);
+            text-transform: uppercase;
+          }
+          
+          td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: top;
+          }
+          
+          .text-right {
+            text-align: right;
+          }
+          
+          .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          
+          .badge-oil_change { background: #ccfbf1; color: #115e59; }
+          .badge-modification { background: #fef3c7; color: #92400e; }
+          .badge-transmission_fluid, .badge-transmission_oil { background: #e0e7ff; color: #3730a3; }
+          .badge-brake_pads, .badge-brake_rotor, .badge-brake_fluid { background: #fee2e2; color: #991b1b; }
+          
+          .row-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+          }
+          
+          .row-notes {
+            font-size: 12px;
+            color: var(--muted-color);
+            white-space: pre-wrap;
+          }
+          
+          .receipt-print-card {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            background: #ffffff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            page-break-inside: avoid;
+          }
+          
+          .receipt-print-header {
+            margin-bottom: 15px;
+            border-bottom: 1px dashed var(--border-color);
+            padding-bottom: 10px;
+          }
+          
+          .receipt-print-header h3 {
+            margin: 0 0 5px 0;
+            font-size: 15px;
+            font-weight: 700;
+          }
+          
+          .receipt-print-header p {
+            margin: 0;
+            font-size: 12px;
+            color: var(--muted-color);
+          }
+          
+          .receipt-print-image-container {
+            text-align: center;
+            padding: 10px 0;
+          }
+          
+          .receipt-print-image-container img {
+            max-width: 100%;
+            max-height: 800px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            object-fit: contain;
+          }
+          
+          .print-actions {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #0f172a;
+            color: #ffffff;
+            border: none;
+            padding: 12px 24px;
+            font-weight: 700;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.2s ease;
+          }
+          
+          .print-actions:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+            background: #1e293b;
+          }
+          
+          /* Print-specific layout overrides */
+          @media print {
+            body {
+              padding: 0;
+            }
+            .print-actions {
+              display: none !important;
+            }
+            .receipt-print-card {
+              page-break-before: always;
+              border: none;
+              box-shadow: none;
+              padding: 0;
+            }
+            .receipt-print-image-container img {
+              max-height: 9.5in; /* Optimize to fit a standard letter page height perfectly */
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="report-header">
+          <div>
+            <h1>GloveBox Service History</h1>
+            <p class="vehicle-details">🚗 ${activeCar.year} ${activeCar.make} ${activeCar.model}</p>
+          </div>
+          <div class="report-meta">
+            <p>Generated: <strong>${new Date().toLocaleDateString()}</strong></p>
+          </div>
+        </div>
+        
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="label">Current Odometer</div>
+            <div class="val">${currentKms.toLocaleString()} km</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Total Maintenance Cost</div>
+            <div class="val">$${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Logged Activities</div>
+            <div class="val">${logsCount} records</div>
+          </div>
+        </div>
+        
+        <h2 class="section-title">📋 Maintenance & Modification Logs</h2>
+        ${records.length > 0 ? `
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 15%">Date</th>
+                <th style="width: 20%">Category</th>
+                <th style="width: 15%">Odometer</th>
+                <th style="width: 15%" class="text-right">Cost</th>
+                <th style="width: 35%">Title & Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${recordsRows}
+            </tbody>
+          </table>
+        ` : `
+          <p style="color: var(--muted-color); font-style: italic; margin-top: 20px;">No service history entries registered for this vehicle.</p>
+        `}
+        
+        ${receiptRecords.length > 0 ? `
+          <h2 class="section-title">📸 Scanned Receipts Annex (${receiptRecords.length})</h2>
+          <div class="receipts-print-gallery">
+            ${receiptsAnnex}
+          </div>
+        ` : ''}
+        
+        <button class="print-actions" onclick="window.print()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 6 2 18 2 18 9"></polyline>
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+            <rect x="6" y="14" width="12" height="8"></rect>
+          </svg>
+          Print / Save as PDF
+        </button>
+      </body>
+      </html>
+    `;
+    
+    reportWindow.document.open();
+    reportWindow.document.write(htmlContent);
+    reportWindow.document.close();
+  };
   
   // Calculate radial percentage
   let oilChangePercentage = 0;
@@ -96,7 +491,7 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
       } else {
         oilChangePercentage = pctDays;
         remainingKmsDisplay = `${oilChangeDueInDays} days`;
-        gaugeLabelDisplay = 'Left (Time)';
+        gaugeLabelDisplay = 'Left';
       }
 
       // Determine gauge color based on the selected percentage (oilChangePercentage)
@@ -302,16 +697,59 @@ export default function Dashboard({ stats, recentRecords, setView, onEditCar }) 
               <line x1="16" y1="17" x2="8" y2="17"></line>
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
+            </div>
+            <div class="metric-details">
+              <span className="metric-label">Logged Logs</span>
+              <h3 className="metric-value">{logsCount}</h3>
+            </div>
           </div>
-          <div className="metric-details">
-            <span className="metric-label">Logged Logs</span>
-            <h3 className="metric-value">{logsCount}</h3>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      {/* 3. Timeline / Category Breakdowns split grid */}
-      <section className="dashboard-split">
+        {/* 2.5 Export & Print Vehicle Dossier Card */}
+        {activeCar && records.length > 0 && (
+          <section className="export-history-section card-glass">
+            <div className="export-header-row">
+              <div className="export-text">
+                <h3>💾 Export & Print Service History</h3>
+                <p className="text-secondary text-sm">
+                  Compile your vehicle maintenance history into a structured CSV spreadsheet or generate a beautiful print-ready service dossier including scanned receipts.
+                </p>
+              </div>
+              <div className="export-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-export"
+                  onClick={downloadCSV}
+                  title="Download spreadsheet log format"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                  </svg>
+                  Download CSV
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-glow btn-export-primary"
+                  onClick={generatePrintableReport}
+                  title="Generate printable report with receipts"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
+                    <polyline points="6 9 6 2 18 2 18 9"></polyline>
+                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path>
+                    <rect x="6" y="14" width="12" height="8"></rect>
+                  </svg>
+                  Generate Report
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* 3. Timeline / Category Breakdowns split grid */}
+        <section className="dashboard-split">
         {/* Category Service Distribution */}
         <div className="split-column card-glass">
           <h3>Log Distribution</h3>

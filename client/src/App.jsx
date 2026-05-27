@@ -587,6 +587,8 @@ export default function App() {
               <Dashboard
                 stats={stats}
                 recentRecords={recentRecords}
+                records={records}
+                activeCar={activeCar}
                 setView={setView}
                 onEditCar={() => {
                   setCarToEdit(activeCar);

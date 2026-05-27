@@ -1677,3 +1677,107 @@ a {
     bottom: calc(9.5rem + env(safe-area-inset-bottom));
   }
 }
+
+/* ==========================================================================
+   GloveBox Dual-Format Service History Export Hub
+   ========================================================================== */
+
+.export-history-section {
+  margin-bottom: 2rem;
+  padding: 1.5rem 2rem;
+  border: 1px solid var(--border-glass);
+  border-radius: var(--border-radius-md);
+  background: var(--bg-slate-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.export-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+}
+
+.export-text h3 {
+  font-size: 1.15rem;
+  font-weight: 800;
+  margin: 0 0 6px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+}
+
+.export-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.btn-export {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-glass);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: var(--shadow-button);
+}
+
+.btn-export:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
+  transform: translateY(-1.5px);
+}
+
+.btn-export-primary {
+  background: rgba(0, 242, 254, 0.06);
+  border: 1px solid rgba(0, 242, 254, 0.25);
+  color: var(--neon-teal);
+  display: inline-flex;
+  align-items: center;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  box-shadow: 0 0 15px rgba(0, 242, 254, 0.03);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-export-primary:hover {
+  background: rgba(0, 242, 254, 0.12);
+  border-color: rgba(0, 242, 254, 0.45);
+  box-shadow: 0 0 20px rgba(0, 242, 254, 0.15);
+  color: var(--neon-teal);
+  transform: translateY(-1.5px);
+}
+
+@media (max-width: 768px) {
+  .export-history-section {
+    padding: 1.25rem 1.25rem;
+  }
+
+  .export-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1.25rem;
+  }
+  
+  .export-actions {
+    width: 100%;
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .export-actions button {
+    width: 100%;
+    justify-content: center;
+  }
+}
