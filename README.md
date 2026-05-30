@@ -8,9 +8,12 @@ It keeps all your records, costs, and receipt documents entirely local. It featu
 
 ## 🌟 Key Features
 
+* **Multi-Vehicle Garage:** Manage an entire fleet of cars from a single instance with dedicated dashboards, custom service intervals, and isolated records.
 * **Vehicle Health Dashboard:** View current mileage, total maintenance costs, and a visual Timeline of recent actions.
-* **Oil Change Radial Gauge:** Automatically tracks target intervals (default `8,000 km`) and alerts you when your next oil change is approaching or overdue.
+* **Oil Change Radial Gauge:** Automatically tracks target intervals (e.g., `8,000 km` or `6 months`) and alerts you when your next oil change is approaching or overdue.
+* **Fuel Tracking & Economy:** Log your fuel fill-ups to automatically calculate distance traveled, cost, and L/100km fuel efficiency math.
 * **Custom Modifications & Upgrades Logging:** Categorize items as standard maintenance or modifications with custom titles, mileage logs, and notes.
+* **Advanced Fleet Exports:** Export your service history as CSV spreadsheets or generate beautiful, printable HTML reports for a single vehicle or your entire garage. Easily filter exports by the current year or all-time logs.
 * **Camera Capture with Client-Side Document Scanner:**
   * Auto-activates on photo capture or file upload.
   * **4 Draggable Handles Overlay:** Easily trace the bounds of your receipt.

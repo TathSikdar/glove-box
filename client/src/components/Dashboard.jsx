@@ -6,7 +6,7 @@
  * Follows Google Coding Standards and React best practices.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import CategoryIcon from './CategoryIcon';
 
 /**
@@ -17,7 +17,10 @@ import CategoryIcon from './CategoryIcon';
  * @param {function(string): void} props.setView Setter to trigger page views.
  * @return {!React.ReactElement}
  */
-export default function Dashboard({ stats, recentRecords, records = [], activeCar = null, setView, onEditCar }) {
+export default function Dashboard({ stats, recentRecords, records = [], fuelLogs = [], activeCar = null, cars = [], setView, onEditCar }) {
+  const [exportType, setExportType] = useState('both'); // 'maintenance', 'fuel', 'both'
+  const [exportCarScope, setExportCarScope] = useState('active'); // 'active', 'all'
+  const [exportTimeScope, setExportTimeScope] = useState('all'); // 'all', 'current_year'
   const {
     currentKms,
     totalCost,
@@ -37,99 +40,419 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
 
   /**
    * Generates and downloads a clean, sanitised CSV spreadsheet file
-   * containing the complete maintenance records for the active vehicle.
+   * containing the complete maintenance records, fuel records, or both
+   * for the active vehicle.
    */
-  const downloadCSV = () => {
-    if (!activeCar || records.length === 0) return;
+  const fetchExportData = async () => {
+    let exportRecords = [];
+    let exportFuelLogs = [];
     
-    const headers = [
-      'Date',
-      'Category',
-      'Odometer Reading (km)',
-      'Cost ($)',
-      'Title / Task',
-      'Notes & Observations',
-      'Scanned Receipt File'
-    ];
+    if (exportCarScope === 'all') {
+      try {
+        const [recordsRes, fuelRes] = await Promise.all([
+          fetch('/api/records?carId=all'),
+          fetch('/api/fuel?carId=all')
+        ]);
+        if (recordsRes.ok) exportRecords = await recordsRes.json();
+        if (fuelRes.ok) exportFuelLogs = await fuelRes.json();
+      } catch (err) {
+        console.error('Failed to fetch all logs for export', err);
+      }
+    } else {
+      exportRecords = [...records];
+      exportFuelLogs = [...fuelLogs];
+    }
     
-    // Process rows with CSV escapes for quotes and commas
-    const rows = records.map((record) => {
-      const dateStr = record.date;
-      const categoryStr = record.category.toUpperCase().replace(/_/g, ' ');
-      const kmsStr = record.kms;
-      const costStr = record.cost.toFixed(2);
-      
-      // Escape inner quotes by doubling them, wrap values containing quotes or commas in double quotes
-      const cleanTitle = `"${record.title.replace(/"/g, '""')}"`;
-      const cleanNotes = `"${(record.notes || '').replace(/"/g, '""')}"`;
-      const receiptStr = record.receipt_image 
-        ? `"${window.location.origin}/uploads/${record.receipt_image}"` 
-        : '"None"';
-      
-      return [dateStr, categoryStr, kmsStr, costStr, cleanTitle, cleanNotes, receiptStr].join(',');
-    });
+    if (exportTimeScope === 'current_year') {
+      const currentYear = new Date().getFullYear();
+      exportRecords = exportRecords.filter(r => new Date(r.date).getFullYear() === currentYear);
+      exportFuelLogs = exportFuelLogs.filter(f => new Date(f.date).getFullYear() === currentYear);
+    }
     
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n'); // Add UTF-8 BOM
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `glovebox_${activeCar.year}_${activeCar.make}_${activeCar.model}_service_history.csv`.toLowerCase().replace(/\s+/g, '_');
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    return { exportRecords, exportFuelLogs };
   };
 
-  /**
-   * Compiles and opens an immersive, print-ready HTML service history report
-   * in a new browser tab, automatically prompting the browser print dial.
-   */
-  const generatePrintableReport = () => {
+  const getCarName = (carId) => {
+    const car = cars.find(c => c.id === carId);
+    if (car) return `${car.year} ${car.make} ${car.model}`;
+    return 'Unknown Vehicle';
+  };
+
+  const downloadCSV = async () => {
     if (!activeCar) return;
+    const { exportRecords, exportFuelLogs } = await fetchExportData();
+
+    const downloadMaintenanceCSV = () => {
+      if (exportRecords.length === 0) return;
+      const baseHeaders = [
+        'Date',
+        'Category',
+        'Odometer Reading (km)',
+        'Cost ($)',
+        'Title / Task',
+        'Notes & Observations',
+        'Scanned Receipt File'
+      ];
+      
+      const headers = exportCarScope === 'all' ? ['Vehicle', ...baseHeaders] : baseHeaders;
+      
+      const rows = exportRecords.map((record) => {
+        const dateStr = record.date;
+        const categoryStr = record.category.toUpperCase().replace(/_/g, ' ');
+        const kmsStr = record.kms;
+        const costStr = record.cost.toFixed(2);
+        const cleanTitle = `"${record.title.replace(/"/g, '""')}"`;
+        const cleanNotes = `"${(record.notes || '').replace(/"/g, '""')}"`;
+        const receiptStr = record.receipt_image 
+          ? `"${window.location.origin}/uploads/${record.receipt_image}"` 
+          : '"None"';
+        
+        const rowData = [dateStr, categoryStr, kmsStr, costStr, cleanTitle, cleanNotes, receiptStr];
+        if (exportCarScope === 'all') {
+          rowData.unshift(`"${getCarName(record.car_id)}"`);
+        }
+        return rowData.join(',');
+      });
+      
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      const filenamePrefix = exportCarScope === 'all' ? 'glovebox_all_vehicles' : `glovebox_${activeCar.year}_${activeCar.make}_${activeCar.model}`;
+      const filenameSuffix = exportTimeScope === 'current_year' ? '_current_year' : '';
+      link.download = `${filenamePrefix}_service_history${filenameSuffix}.csv`.toLowerCase().replace(/\s+/g, '_');
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+
+    const downloadFuelCSV = () => {
+      if (exportFuelLogs.length === 0) return;
+
+      const sortedLogs = [...exportFuelLogs].sort((a, b) => a.kms - b.kms);
+      const calculatedEconMap = {};
+
+      for (let i = 1; i < sortedLogs.length; i++) {
+        const current = sortedLogs[i];
+        const previous = sortedLogs[i - 1];
+
+        // Ensure both logs are for the same car when exportCarScope === 'all'
+        if (current.car_id !== previous.car_id) continue;
+
+        if (current.full_tank === 1 && previous.full_tank === 1) {
+          const distance = current.kms - previous.kms;
+          if (distance > 0) {
+            const econ = (current.liters / distance) * 100;
+            calculatedEconMap[current.id] = parseFloat(econ.toFixed(2));
+          }
+        }
+      }
+
+      const baseHeaders = [
+        'Date',
+        'Odometer Reading (km)',
+        'Liters',
+        'Price per Liter',
+        'Total Cost',
+        'Full Tank',
+        'Economy (L/100km)',
+        'Scanned Receipt File'
+      ];
+      
+      const headers = exportCarScope === 'all' ? ['Vehicle', ...baseHeaders] : baseHeaders;
+
+      const sortedLogsDesc = [...exportFuelLogs].sort((a, b) => b.kms - a.kms);
+
+      const rows = sortedLogsDesc.map((log) => {
+        const dateStr = log.date;
+        const kmsStr = log.kms;
+        const litersStr = log.liters.toFixed(2);
+        const priceStr = log.price_per_liter.toFixed(3);
+        const costStr = log.cost.toFixed(2);
+        const fullTankStr = log.full_tank === 1 ? 'Yes' : 'No';
+        const econStr = calculatedEconMap[log.id] ? calculatedEconMap[log.id].toFixed(2) : 'N/A';
+        const receiptStr = log.receipt_image 
+          ? `"${window.location.origin}/uploads/${log.receipt_image}"` 
+          : '"None"';
+
+        const rowData = [dateStr, kmsStr, litersStr, priceStr, costStr, fullTankStr, econStr, receiptStr];
+        if (exportCarScope === 'all') {
+          rowData.unshift(`"${getCarName(log.car_id)}"`);
+        }
+        return rowData.join(',');
+      });
+
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      const filenamePrefix = exportCarScope === 'all' ? 'glovebox_all_vehicles' : `glovebox_${activeCar.year}_${activeCar.make}_${activeCar.model}`;
+      const filenameSuffix = exportTimeScope === 'current_year' ? '_current_year' : '';
+      link.download = `${filenamePrefix}_fuel_history${filenameSuffix}.csv`.toLowerCase().replace(/\s+/g, '_');
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+
+    if (exportType === 'maintenance') {
+      downloadMaintenanceCSV();
+    } else if (exportType === 'fuel') {
+      downloadFuelCSV();
+    } else {
+      downloadMaintenanceCSV();
+      setTimeout(() => {
+        downloadFuelCSV();
+      }, 350);
+    }
+  };
+
+  const generatePrintableReport = async () => {
+    if (!activeCar) return;
+    const { exportRecords, exportFuelLogs } = await fetchExportData();
     
     const reportWindow = window.open('', '_blank');
     if (!reportWindow) {
       alert('Pop-up blocked! Please allow pop-ups for GloveBox to open the service report.');
       return;
     }
-    
-    // Generate beautiful list of records
-    const recordsRows = records.map((r) => `
-      <tr>
-        <td><strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong></td>
-        <td><span class="badge badge-${r.category}">${r.category.toUpperCase().replace(/_/g, ' ')}</span></td>
-        <td><strong>${r.kms.toLocaleString()} km</strong></td>
-        <td class="text-right"><strong>$${r.cost.toFixed(2)}</strong></td>
-        <td>
-          <div class="row-title">${r.title}</div>
-          ${r.notes ? `<div class="row-notes">${r.notes}</div>` : ''}
-        </td>
-      </tr>
-    `).join('');
-    
-    // Generate scanned receipts annex images
-    const receiptRecords = records.filter(r => r.receipt_image);
-    const receiptsAnnex = receiptRecords.map((r, index) => `
-      <div class="receipt-print-card">
-        <div class="receipt-print-header">
-          <h3>Receipt #${index + 1}: ${r.title}</h3>
-          <p>Logged Odometer: <strong>${r.kms.toLocaleString()} km</strong> | Date: <strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong> | Cost: <strong>$${r.cost.toFixed(2)}</strong></p>
+
+    const sortedFuelLogs = [...exportFuelLogs].sort((a, b) => a.kms - b.kms);
+    let totalLitersForEcon = 0;
+    let totalDistanceForEcon = 0;
+    const calculatedEconMap = {};
+
+    for (let i = 1; i < sortedFuelLogs.length; i++) {
+      const current = sortedFuelLogs[i];
+      const previous = sortedFuelLogs[i - 1];
+
+      if (current.car_id !== previous.car_id) continue;
+
+      if (current.full_tank === 1 && previous.full_tank === 1) {
+        const distance = current.kms - previous.kms;
+        if (distance > 0) {
+          const econ = (current.liters / distance) * 100;
+          calculatedEconMap[current.id] = parseFloat(econ.toFixed(2));
+          totalLitersForEcon += current.liters;
+          totalDistanceForEcon += distance;
+        }
+      }
+    }
+
+    const avgEconomy = totalDistanceForEcon > 0
+      ? parseFloat(((totalLitersForEcon / totalDistanceForEcon) * 100).toFixed(2))
+      : null;
+
+    const totalFuelCost = exportFuelLogs.reduce((acc, log) => acc + log.cost, 0);
+    const totalFuelVolume = exportFuelLogs.reduce((acc, log) => acc + log.liters, 0);
+    const totalMaintenanceCost = exportRecords.reduce((acc, record) => acc + record.cost, 0);
+    const exportLogsCount = exportRecords.length;
+
+    let summaryGridHTML = '';
+    if (exportType === 'maintenance') {
+      summaryGridHTML = `
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="label">Total Maintenance Cost</div>
+            <div class="val">$${totalMaintenanceCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Logged Activities</div>
+            <div class="val">${exportLogsCount} records</div>
+          </div>
         </div>
-        <div class="receipt-print-image-container">
-          <img src="/uploads/${r.receipt_image}" alt="Receipt crop for ${r.title}" />
+      `;
+    } else if (exportType === 'fuel') {
+      summaryGridHTML = `
+        <div class="summary-grid summary-grid-4">
+          <div class="summary-card">
+            <div class="label">Average Fuel Economy</div>
+            <div class="val">${avgEconomy !== null ? avgEconomy + ' L/100km' : 'N/A'}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Total Fuel Cost</div>
+            <div class="val">$${totalFuelCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Volume Filled</div>
+            <div class="val">${totalFuelVolume.toLocaleString(undefined, { maximumFractionDigits: 1 })} L</div>
+          </div>
         </div>
-      </div>
-    `).join('');
+      `;
+    } else {
+      summaryGridHTML = `
+        <div class="summary-grid summary-grid-4">
+          <div class="summary-card">
+            <div class="label">Total Maintenance Cost</div>
+            <div class="val">$${totalMaintenanceCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Total Fuel Cost</div>
+            <div class="val">$${totalFuelCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Average Fuel Economy</div>
+            <div class="val">${avgEconomy !== null ? avgEconomy + ' L/100km' : 'N/A'}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    let mainContentHTML = '';
+
+    if (exportType === 'maintenance' || exportType === 'both') {
+      const recordsRows = exportRecords.map((r) => `
+        <tr>
+          ${exportCarScope === 'all' ? `<td>${getCarName(r.car_id)}</td>` : ''}
+          <td><strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong></td>
+          <td><span class="badge badge-${r.category}">${r.category.toUpperCase().replace(/_/g, ' ')}</span></td>
+          <td><strong>${r.kms.toLocaleString()} km</strong></td>
+          <td class="text-right"><strong>$${r.cost.toFixed(2)}</strong></td>
+          <td>
+            <div class="row-title">${r.title}</div>
+            ${r.notes ? `<div class="row-notes">${r.notes}</div>` : ''}
+          </td>
+        </tr>
+      `).join('');
+
+      mainContentHTML += `
+        <h2 class="section-title">📋 Maintenance & Modification Logs</h2>
+        ${exportRecords.length > 0 ? `
+          <table>
+            <thead>
+              <tr>
+                ${exportCarScope === 'all' ? '<th style="width: 15%">Vehicle</th>' : ''}
+                <th style="width: 15%">Date</th>
+                <th style="width: 20%">Category</th>
+                <th style="width: 15%">Odometer</th>
+                <th style="width: 15%" class="text-right">Cost</th>
+                <th style="width: 35%">Title & Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${recordsRows}
+            </tbody>
+          </table>
+        ` : `
+          <p style="color: var(--muted-color); font-style: italic; margin-top: 20px; margin-bottom: 40px;">No service history entries found.</p>
+        `}
+      `;
+    }
+
+    if (exportType === 'fuel' || exportType === 'both') {
+      const fuelLogsDesc = [...exportFuelLogs].sort((a, b) => b.kms - a.kms);
+
+      const fuelRows = fuelLogsDesc.map((log) => {
+        const logEcon = calculatedEconMap[log.id];
+        return `
+          <tr>
+            ${exportCarScope === 'all' ? `<td>${getCarName(log.car_id)}</td>` : ''}
+            <td><strong>${new Date(log.date + 'T00:00:00').toLocaleDateString()}</strong></td>
+            <td><strong>${log.kms.toLocaleString()} km</strong></td>
+            <td>${log.liters.toFixed(2)} L</td>
+            <td>$${log.price_per_liter.toFixed(3)}</td>
+            <td class="text-right"><strong>$${log.cost.toFixed(2)}</strong></td>
+            <td>
+              ${log.full_tank === 1 ? (
+                logEcon ? (
+                  `<span class="badge badge-econ">🟢 ${logEcon} L/100km</span>`
+                ) : (
+                  `<span class="text-muted text-xs">Reference (Full)</span>`
+                )
+              ) : (
+                `<span class="text-muted text-xs">Partial fill</span>`
+              )}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      mainContentHTML += `
+        <h2 class="section-title">⛽ Fuel Purchase & Economy Logs</h2>
+        ${exportFuelLogs.length > 0 ? `
+          <table>
+            <thead>
+              <tr>
+                ${exportCarScope === 'all' ? '<th style="width: 15%">Vehicle</th>' : ''}
+                <th style="width: 15%">Date</th>
+                <th style="width: 15%">Odometer</th>
+                <th style="width: 15%">Volume</th>
+                <th style="width: 15%">Price/L</th>
+                <th style="width: 15%" class="text-right">Cost</th>
+                <th style="width: 25%">Efficiency</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${fuelRows}
+            </tbody>
+          </table>
+        ` : `
+          <p style="color: var(--muted-color); font-style: italic; margin-top: 20px; margin-bottom: 40px;">No fuel logs found.</p>
+        `}
+      `;
+    }
+
+    const maintenanceReceipts = (exportType === 'maintenance' || exportType === 'both') 
+      ? exportRecords.filter(r => r.receipt_image) 
+      : [];
+    const fuelReceipts = (exportType === 'fuel' || exportType === 'both') 
+      ? exportFuelLogs.filter(f => f.receipt_image) 
+      : [];
+
+    let receiptsAnnexHTML = '';
+    const totalReceiptsCount = maintenanceReceipts.length + fuelReceipts.length;
+
+    if (totalReceiptsCount > 0) {
+      let index = 1;
+      const maintenanceAnnex = maintenanceReceipts.map((r) => `
+        <div class="receipt-print-card">
+          <div class="receipt-print-header">
+            <h3>Receipt #${index++}: ${r.title} (Maintenance)</h3>
+            <p>${exportCarScope === 'all' ? `Vehicle: <strong>${getCarName(r.car_id)}</strong> | ` : ''}Logged Odometer: <strong>${r.kms.toLocaleString()} km</strong> | Date: <strong>${new Date(r.date + 'T00:00:00').toLocaleDateString()}</strong> | Cost: <strong>$${r.cost.toFixed(2)}</strong></p>
+          </div>
+          <div class="receipt-print-image-container">
+            <img src="/uploads/${r.receipt_image}" alt="Receipt crop for ${r.title}" />
+          </div>
+        </div>
+      `).join('');
+
+      const fuelAnnex = fuelReceipts.map((f) => `
+        <div class="receipt-print-card">
+          <div class="receipt-print-header">
+            <h3>Receipt #${index++}: Fuel Purchase (${f.liters.toFixed(2)} L) (Fuel)</h3>
+            <p>${exportCarScope === 'all' ? `Vehicle: <strong>${getCarName(f.car_id)}</strong> | ` : ''}Logged Odometer: <strong>${f.kms.toLocaleString()} km</strong> | Date: <strong>${new Date(f.date + 'T00:00:00').toLocaleDateString()}</strong> | Cost: <strong>$${f.cost.toFixed(2)}</strong></p>
+          </div>
+          <div class="receipt-print-image-container">
+            <img src="/uploads/${f.receipt_image}" alt="Fuel Receipt crop" />
+          </div>
+        </div>
+      `).join('');
+
+      receiptsAnnexHTML = `
+        <h2 class="section-title">📸 Scanned Receipts Annex (${totalReceiptsCount})</h2>
+        <div class="receipts-print-gallery">
+          ${maintenanceAnnex}
+          ${fuelAnnex}
+        </div>
+      `;
+    }
     
+    const titleText = exportCarScope === 'all' ? 'All Vehicles' : `${activeCar.year} ${activeCar.make} ${activeCar.model}`;
+    const timeText = exportTimeScope === 'current_year' ? ' (Current Year)' : '';
+
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="en">
       <head>
         <meta charset="UTF-8">
-        <title>GloveBox Service Dossier - ${activeCar.year} ${activeCar.make} ${activeCar.model}</title>
+        <title>GloveBox Service Dossier - ${titleText}</title>
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
           
@@ -188,6 +511,10 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
             grid-template-columns: repeat(3, 1fr);
             gap: 20px;
             margin-bottom: 40px;
+          }
+
+          .summary-grid-4 {
+            grid-template-columns: repeat(4, 1fr);
           }
           
           .summary-card {
@@ -261,6 +588,9 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
           .badge-modification { background: #fef3c7; color: #92400e; }
           .badge-transmission_fluid, .badge-transmission_oil { background: #e0e7ff; color: #3730a3; }
           .badge-brake_pads, .badge-brake_rotor, .badge-brake_fluid { background: #fee2e2; color: #991b1b; }
+          .badge-econ { background: #e0f2fe; color: #0369a1; }
+          .text-xs { font-size: 11px; }
+          .text-muted { color: var(--muted-color); }
           
           .row-title {
             font-weight: 600;
@@ -340,7 +670,6 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
             background: #1e293b;
           }
           
-          /* Print-specific layout overrides */
           @media print {
             body {
               padding: 0;
@@ -355,7 +684,7 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
               padding: 0;
             }
             .receipt-print-image-container img {
-              max-height: 9.5in; /* Optimize to fit a standard letter page height perfectly */
+              max-height: 9.5in;
             }
           }
         </style>
@@ -364,54 +693,18 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
         <div class="report-header">
           <div>
             <h1>GloveBox Service History</h1>
-            <p class="vehicle-details">🚗 ${activeCar.year} ${activeCar.make} ${activeCar.model}</p>
+            <p class="vehicle-details">🚗 ${titleText}${timeText}</p>
           </div>
           <div class="report-meta">
             <p>Generated: <strong>${new Date().toLocaleDateString()}</strong></p>
           </div>
         </div>
         
-        <div class="summary-grid">
-          <div class="summary-card">
-            <div class="label">Current Odometer</div>
-            <div class="val">${currentKms.toLocaleString()} km</div>
-          </div>
-          <div class="summary-card">
-            <div class="label">Total Maintenance Cost</div>
-            <div class="val">$${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-          </div>
-          <div class="summary-card">
-            <div class="label">Logged Activities</div>
-            <div class="val">${logsCount} records</div>
-          </div>
-        </div>
+        ${summaryGridHTML}
         
-        <h2 class="section-title">📋 Maintenance & Modification Logs</h2>
-        ${records.length > 0 ? `
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 15%">Date</th>
-                <th style="width: 20%">Category</th>
-                <th style="width: 15%">Odometer</th>
-                <th style="width: 15%" class="text-right">Cost</th>
-                <th style="width: 35%">Title & Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${recordsRows}
-            </tbody>
-          </table>
-        ` : `
-          <p style="color: var(--muted-color); font-style: italic; margin-top: 20px;">No service history entries registered for this vehicle.</p>
-        `}
+        ${mainContentHTML}
         
-        ${receiptRecords.length > 0 ? `
-          <h2 class="section-title">📸 Scanned Receipts Annex (${receiptRecords.length})</h2>
-          <div class="receipts-print-gallery">
-            ${receiptsAnnex}
-          </div>
-        ` : ''}
+        ${receiptsAnnexHTML}
         
         <button class="print-actions" onclick="window.print()">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -429,7 +722,7 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
     reportWindow.document.write(htmlContent);
     reportWindow.document.close();
   };
-  
+
   // Calculate radial percentage
   let oilChangePercentage = 0;
   let isOverdue = false;
@@ -473,26 +766,25 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
       gaugeColor = 'var(--error-red)';
       
       if (isKmsOverdue && isDaysOverdue) {
-        remainingKmsDisplay = 'Overdue';
-        gaugeLabelDisplay = 'Kms & Time Exceeded';
+        remainingKmsDisplay = `${Math.abs(oilChangeDueInKms).toLocaleString()} km`;
+        gaugeLabelDisplay = 'Overdue (Kms & Time)';
       } else if (isKmsOverdue) {
-        remainingKmsDisplay = `${nextChangeDueAtKms.toLocaleString()} km`;
-        gaugeLabelDisplay = 'Overdue (Due At)';
+        remainingKmsDisplay = `${Math.abs(oilChangeDueInKms).toLocaleString()} km`;
+        gaugeLabelDisplay = 'Overdue';
       } else {
-        remainingKmsDisplay = `${Math.abs(oilChangeDueInDays)} days`;
-        gaugeLabelDisplay = 'Overdue by Time';
+        remainingKmsDisplay = `${Math.abs(oilChangeDueInKms).toLocaleString()} km`;
+        gaugeLabelDisplay = 'Overdue (By Time)';
       }
     } else {
       // Not overdue, select the one closer to expiration (smaller percentage)
       if (pctKms <= pctDays) {
         oilChangePercentage = pctKms;
-        remainingKmsDisplay = `${nextChangeDueAtKms.toLocaleString()} km`;
-        gaugeLabelDisplay = 'Due at Odometer';
       } else {
         oilChangePercentage = pctDays;
-        remainingKmsDisplay = `${oilChangeDueInDays} days`;
-        gaugeLabelDisplay = 'Left';
       }
+      
+      remainingKmsDisplay = `${oilChangeDueInKms.toLocaleString()} km`;
+      gaugeLabelDisplay = 'Left';
 
       // Determine gauge color based on the selected percentage (oilChangePercentage)
       if (oilChangePercentage < 20) {
@@ -568,12 +860,19 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
                   marginBottom: '8px'
                 }}>
                   {/* Mileage row */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>🚗 Odometer Status</span>
-                    <strong style={{ color: oilChangeDueInKms <= 0 ? 'var(--error-red)' : 'var(--neon-teal)', fontSize: '13px' }}>
-                      Due at {(lastOilChangeKms + OIL_CHANGE_INTERVAL).toLocaleString()} km
-                      {oilChangeDueInKms <= 0 && ' (Overdue)'}
-                    </strong>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      <span>🚗 Odometer Status</span>
+                      <span>{elapsedKms.toLocaleString()} / {OIL_CHANGE_INTERVAL.toLocaleString()} km</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', opacity: 0.7 }}>{elapsedKms.toLocaleString()} km elapsed since last service</span>
+                      <strong style={{ color: oilChangeDueInKms <= 0 ? 'var(--error-red)' : 'var(--neon-teal)', fontSize: '13px' }}>
+                        {oilChangeDueInKms <= 0 
+                          ? `Overdue by ${Math.abs(oilChangeDueInKms).toLocaleString()} km` 
+                          : `${oilChangeDueInKms.toLocaleString()} km left`}
+                      </strong>
+                    </div>
                   </div>
 
                   <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.08)' }} />
@@ -706,7 +1005,7 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
         </section>
 
         {/* 2.5 Export & Print Vehicle Dossier Card */}
-        {activeCar && records.length > 0 && (
+        {activeCar && (records.length > 0 || fuelLogs.length > 0) && (
           <section className="export-history-section card-glass">
             <div className="export-header-row">
               <div className="export-text">
@@ -714,6 +1013,92 @@ export default function Dashboard({ stats, recentRecords, records = [], activeCa
                 <p className="text-secondary text-sm">
                   Compile your vehicle maintenance history into a structured CSV spreadsheet or generate a beautiful print-ready service dossier including scanned receipts.
                 </p>
+                {/* Radio selection group */}
+                <div className="export-selector-group">
+                  <label className={`export-radio-label ${exportType === 'maintenance' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-type"
+                      value="maintenance"
+                      checked={exportType === 'maintenance'}
+                      onChange={() => setExportType('maintenance')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    Maintenance Logs Only
+                  </label>
+                  <label className={`export-radio-label ${exportType === 'fuel' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-type"
+                      value="fuel"
+                      checked={exportType === 'fuel'}
+                      onChange={() => setExportType('fuel')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    Fuel Logs Only
+                  </label>
+                  <label className={`export-radio-label ${exportType === 'both' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-type"
+                      value="both"
+                      checked={exportType === 'both'}
+                      onChange={() => setExportType('both')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    Both Logs
+                  </label>
+                </div>
+
+                <div className="export-selector-group" style={{ marginTop: '10px' }}>
+                  <label className={`export-radio-label ${exportCarScope === 'active' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-car-scope"
+                      value="active"
+                      checked={exportCarScope === 'active'}
+                      onChange={() => setExportCarScope('active')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    Current Vehicle
+                  </label>
+                  <label className={`export-radio-label ${exportCarScope === 'all' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-car-scope"
+                      value="all"
+                      checked={exportCarScope === 'all'}
+                      onChange={() => setExportCarScope('all')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    All Vehicles
+                  </label>
+                </div>
+
+                <div className="export-selector-group" style={{ marginTop: '10px' }}>
+                  <label className={`export-radio-label ${exportTimeScope === 'all' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-time-scope"
+                      value="all"
+                      checked={exportTimeScope === 'all'}
+                      onChange={() => setExportTimeScope('all')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    All Time
+                  </label>
+                  <label className={`export-radio-label ${exportTimeScope === 'current_year' ? 'selected' : ''}`}>
+                    <input
+                      type="radio"
+                      name="export-time-scope"
+                      value="current_year"
+                      checked={exportTimeScope === 'current_year'}
+                      onChange={() => setExportTimeScope('current_year')}
+                      style={{ accentColor: 'var(--neon-teal)', width: '16px', height: '16px', margin: 0, cursor: 'pointer' }}
+                    />
+                    Current Year
+                  </label>
+                </div>
               </div>
               <div className="export-actions">
                 <button

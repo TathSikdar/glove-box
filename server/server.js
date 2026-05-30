@@ -155,49 +155,66 @@ app.put('/api/cars/:id', (req, res) => {
 app.delete('/api/cars/:id', (req, res) => {
   const { id } = req.params;
 
-  // 1. Retrieve all receipt images for this car to unlink files from disk
+  // 1. Retrieve all receipt images for this car (both service records and fuel logs) to unlink from disk
   const selectQuery = 'SELECT receipt_image FROM records WHERE car_id = ?';
-  db.all(selectQuery, [id], (selectErr, rows) => {
+  const selectFuelQuery = 'SELECT receipt_image FROM fuel_logs WHERE car_id = ?';
+
+  db.all(selectQuery, [id], (selectErr, recordRows) => {
     if (selectErr) {
       console.error('[API] Error retrieving car receipts:', selectErr.message);
       return res.status(500).json({ error: 'Internal Server Error' });
     }
 
-    // 2. Perform database deletes sequentially
-    db.serialize(() => {
-      // Begin transaction-like sequence: delete child records, then parent car
-      db.run('DELETE FROM records WHERE car_id = ?', [id], (deleteRecErr) => {
-        if (deleteRecErr) {
-          console.error('[API] Error cascading deletes on records:', deleteRecErr.message);
-        }
-      });
+    db.all(selectFuelQuery, [id], (selectFuelErr, fuelRows) => {
+      if (selectFuelErr) {
+        console.error('[API] Error retrieving car fuel receipts:', selectFuelErr.message);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
 
-      db.run('DELETE FROM cars WHERE id = ?', [id], function(deleteCarErr) {
-        if (deleteCarErr) {
-          console.error('[API] Error deleting car:', deleteCarErr.message);
-          return res.status(500).json({ error: 'Internal Server Error' });
-        }
+      const allReceipts = [
+        ...(recordRows || []).map(r => r.receipt_image),
+        ...(fuelRows || []).map(f => f.receipt_image)
+      ].filter(Boolean);
 
-        if (this.changes === 0) {
-          return res.status(404).json({ error: 'Car not found' });
-        }
+      // 2. Perform database deletes sequentially
+      db.serialize(() => {
+        db.run('DELETE FROM records WHERE car_id = ?', [id], (deleteRecErr) => {
+          if (deleteRecErr) {
+            console.error('[API] Error cascading deletes on records:', deleteRecErr.message);
+          }
+        });
 
-        // 3. Clean up physical files on success
-        if (rows && rows.length > 0) {
-          rows.forEach((row) => {
-            if (row.receipt_image) {
-              const filePath = path.join(uploadsDir, row.receipt_image);
+        db.run('DELETE FROM fuel_logs WHERE car_id = ?', [id], (deleteFuelErr) => {
+          if (deleteFuelErr) {
+            console.error('[API] Error cascading deletes on fuel logs:', deleteFuelErr.message);
+          }
+        });
+
+        db.run('DELETE FROM cars WHERE id = ?', [id], function(deleteCarErr) {
+          if (deleteCarErr) {
+            console.error('[API] Error deleting car:', deleteCarErr.message);
+            return res.status(500).json({ error: 'Internal Server Error' });
+          }
+
+          if (this.changes === 0) {
+            return res.status(404).json({ error: 'Car not found' });
+          }
+
+          // 3. Clean up physical files on success
+          if (allReceipts.length > 0) {
+            allReceipts.forEach((receiptImage) => {
+              const filePath = path.join(uploadsDir, receiptImage);
               fs.unlink(filePath, (unlinkErr) => {
                 if (unlinkErr && unlinkErr.code !== 'ENOENT') {
                   console.error('[API] Error unlinking file on cascade delete:', unlinkErr.message);
                 }
               });
-            }
-          });
-          console.log(`[API] Cascade deleted ${rows.length} receipt images for car ID: ${id}`);
-        }
+            });
+            console.log(`[API] Cascade deleted ${allReceipts.length} receipt images for car ID: ${id}`);
+          }
 
-        res.json({ message: 'Car and all associated logs deleted successfully', id });
+          res.json({ message: 'Car and all associated logs deleted successfully', id });
+        });
       });
     });
   });
@@ -218,8 +235,16 @@ app.get('/api/records', (req, res) => {
     return res.status(400).json({ error: 'Missing carId query parameter' });
   }
 
-  const query = 'SELECT * FROM records WHERE car_id = ? ORDER BY kms DESC, date DESC';
-  db.all(query, [carId], (err, rows) => {
+  let query, params;
+  if (carId === 'all') {
+    query = 'SELECT * FROM records ORDER BY date DESC, kms DESC';
+    params = [];
+  } else {
+    query = 'SELECT * FROM records WHERE car_id = ? ORDER BY kms DESC, date DESC';
+    params = [carId];
+  }
+
+  db.all(query, params, (err, rows) => {
     if (err) {
       console.error('[API] Error fetching records:', err.message);
       return res.status(500).json({ error: 'Internal Server Error' });
@@ -339,6 +364,125 @@ app.delete('/api/records/:id', (req, res) => {
       }
 
       res.json({ message: 'Record and receipt successfully deleted', id });
+    });
+  });
+});
+
+// ==========================================
+// REST API: Fuel Logging Endpoints
+// ==========================================
+
+/**
+ * GET /api/fuel
+ * Returns all fuel logs for the vehicle, ordered by mileage desc.
+ */
+app.get('/api/fuel', (req, res) => {
+  const { carId } = req.query;
+
+  if (!carId) {
+    return res.status(400).json({ error: 'Missing carId query parameter' });
+  }
+
+  let query, params;
+  if (carId === 'all') {
+    query = 'SELECT * FROM fuel_logs ORDER BY date DESC, kms DESC';
+    params = [];
+  } else {
+    query = 'SELECT * FROM fuel_logs WHERE car_id = ? ORDER BY kms DESC, date DESC';
+    params = [carId];
+  }
+
+  db.all(query, params, (err, rows) => {
+    if (err) {
+      console.error('[API] Error fetching fuel logs:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json(rows);
+  });
+});
+
+/**
+ * POST /api/fuel
+ * Logs a new fuel fill-up, supporting receipt image upload.
+ */
+app.post('/api/fuel', upload.single('receipt'), (req, res) => {
+  const { car_id, date, kms, liters, price_per_liter, full_tank } = req.body;
+
+  if (!car_id || !date || !kms || !liters || !price_per_liter) {
+    return res.status(400).json({ error: 'Missing required fuel fields' });
+  }
+
+  const parsedCarId = parseInt(car_id, 10);
+  const parsedKms = parseInt(kms, 10);
+  const parsedLiters = parseFloat(liters);
+  const parsedPrice = parseFloat(price_per_liter);
+  const parsedFullTank = full_tank === undefined ? 1 : (full_tank == 'true' || full_tank == '1' || full_tank === true ? 1 : 0);
+  
+  // Calculate cost automatically
+  const computedCost = parseFloat((parsedLiters * parsedPrice).toFixed(2));
+  const receiptImage = req.file ? req.file.filename : null;
+
+  const query = `
+    INSERT INTO fuel_logs (car_id, date, kms, liters, price_per_liter, cost, full_tank, receipt_image)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  const params = [parsedCarId, date, parsedKms, parsedLiters, parsedPrice, computedCost, parsedFullTank, receiptImage];
+
+  db.run(query, params, function(err) {
+    if (err) {
+      console.error('[API] Error saving fuel log:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
+    res.status(201).json({
+      id: this.lastID,
+      car_id: parsedCarId,
+      date,
+      kms: parsedKms,
+      liters: parsedLiters,
+      price_per_liter: parsedPrice,
+      cost: computedCost,
+      full_tank: parsedFullTank,
+      receipt_image: receiptImage
+    });
+  });
+});
+
+/**
+ * DELETE /api/fuel/:id
+ * Deletes a fuel fill-up log and unlinks its physical receipt scan if present.
+ */
+app.delete('/api/fuel/:id', (req, res) => {
+  const { id } = req.params;
+
+  const selectQuery = 'SELECT receipt_image FROM fuel_logs WHERE id = ?';
+  db.get(selectQuery, [id], (selectErr, row) => {
+    if (selectErr) {
+      console.error('[API] Error searching fuel log:', selectErr.message);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    
+    if (!row) {
+      return res.status(404).json({ error: 'Fuel log not found' });
+    }
+
+    const deleteQuery = 'DELETE FROM fuel_logs WHERE id = ?';
+    db.run(deleteQuery, [id], function(deleteErr) {
+      if (deleteErr) {
+        console.error('[API] Error deleting fuel log:', deleteErr.message);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+
+      if (row.receipt_image) {
+        const filePath = path.join(uploadsDir, row.receipt_image);
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr && unlinkErr.code !== 'ENOENT') {
+            console.error('[API] Error deleting local file:', unlinkErr.message);
+          }
+        });
+      }
+
+      res.json({ message: 'Fuel log and receipt successfully deleted', id });
     });
   });
 });

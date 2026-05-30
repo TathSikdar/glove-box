@@ -13,14 +13,16 @@ import RecordForm from './components/RecordForm';
 import RecordList from './components/RecordList';
 import CarFormModal from './components/CarFormModal';
 import CarDeleteModal from './components/CarDeleteModal';
+import FuelLogView from './components/FuelLogView';
 
 /**
  * Main application component.
  * @return {!React.ReactElement}
  */
 export default function App() {
-  const [view, setView] = useState('dashboard'); // Routes: 'dashboard', 'logs', 'add', 'edit'
+  const [view, setView] = useState('dashboard'); // Routes: 'dashboard', 'logs', 'fuel', 'add', 'edit'
   const [records, setRecords] = useState([]);
+  const [fuelLogs, setFuelLogs] = useState([]);
   const [editRecordTarget, setEditRecordTarget] = useState(null);
   
   // Vehicles and Active Selector States
@@ -107,14 +109,18 @@ export default function App() {
     loadInitialData();
   }, []);
 
-  // 2. Reactive Data Syncer: Re-fetch records/stats whenever active vehicle switches
+  // 2. Reactive Data Syncer: Re-fetch records/stats/fuel whenever active vehicle switches
   useEffect(() => {
     if (activeCarId === null) return;
 
     const loadCarData = async () => {
       try {
         setIsLoading(true);
-        await Promise.all([fetchRecords(activeCarId), fetchStats(activeCarId)]);
+        await Promise.all([
+          fetchRecords(activeCarId),
+          fetchStats(activeCarId),
+          fetchFuelLogs(activeCarId)
+        ]);
       } catch (err) {
         console.error('[App] Error loading active car data:', err);
       } finally {
@@ -178,15 +184,36 @@ export default function App() {
   };
 
   /**
+   * Fetches all fuel logs from database, ordered by mileage desc, scoped by vehicle.
+   * @param {number} carId The active vehicle ID.
+   */
+  const fetchFuelLogs = async (carId) => {
+    try {
+      const res = await fetch(`/api/fuel?carId=${carId}`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch fuel logs: ${res.statusText}`);
+      }
+      const data = await res.json();
+      setFuelLogs(data);
+    } catch (err) {
+      console.error('[API] Error loading fuel logs:', err);
+    }
+  };
+
+  /**
    * Callback triggered when a new vehicle is saved or an existing vehicle is updated.
    * @param {!Object} updatedCar Saved/updated car details from Express server.
    */
   const handleCarSave = async (updatedCar) => {
     await fetchCars();
     if (activeCarId === updatedCar.id) {
-      // Re-trigger stats and records fetch to reflect custom interval changes immediately
+      // Re-trigger stats, records, and fuel fetch to reflect custom interval changes immediately
       setIsLoading(true);
-      await Promise.all([fetchRecords(activeCarId), fetchStats(activeCarId)]);
+      await Promise.all([
+        fetchRecords(activeCarId),
+        fetchStats(activeCarId),
+        fetchFuelLogs(activeCarId)
+      ]);
       setIsLoading(false);
     } else {
       // If a new car was created, set it as active
@@ -246,12 +273,17 @@ export default function App() {
           localStorage.setItem('glovebox_active_car_id', nextCarId);
         } else {
           // Otherwise, just re-fetch currently active car data
-          await Promise.all([fetchRecords(activeCarId), fetchStats(activeCarId)]);
+          await Promise.all([
+            fetchRecords(activeCarId),
+            fetchStats(activeCarId),
+            fetchFuelLogs(activeCarId)
+          ]);
         }
       } else {
         // Clear all states if no cars are left
         setActiveCarId(null);
         setRecords([]);
+        setFuelLogs([]);
         setStats({
           currentKms: 0,
           totalCost: 0,
@@ -561,6 +593,17 @@ export default function App() {
             </button>
             <button
               type="button"
+              className={`nav-tab ${view === 'fuel' ? 'active' : ''}`}
+              onClick={() => {
+                setEditRecordTarget(null);
+                setView('fuel');
+              }}
+              disabled={activeCarId === null}
+            >
+              Fuel
+            </button>
+            <button
+              type="button"
               className={`nav-tab nav-tab-primary ${view === 'add' ? 'active' : ''}`}
               onClick={() => {
                 setEditRecordTarget(null);
@@ -588,7 +631,9 @@ export default function App() {
                 stats={stats}
                 recentRecords={recentRecords}
                 records={records}
+                fuelLogs={fuelLogs}
                 activeCar={activeCar}
+                cars={cars}
                 setView={setView}
                 onEditCar={() => {
                   setCarToEdit(activeCar);
@@ -602,6 +647,15 @@ export default function App() {
                 records={records}
                 onDelete={handleRecordDelete}
                 onEdit={triggerEditView}
+              />
+            )}
+
+            {view === 'fuel' && activeCarId !== null && (
+              <FuelLogView
+                activeCarId={activeCarId}
+                activeCar={activeCar}
+                fuelLogs={fuelLogs}
+                onRefresh={() => fetchFuelLogs(activeCarId)}
               />
             )}
 

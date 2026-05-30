@@ -98,6 +98,48 @@ db.serialize(() => {
     }
   });
 
+  // 2.5 Create the fuel_logs table if it does not exist
+  db.run(`
+    CREATE TABLE IF NOT EXISTS fuel_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      car_id INTEGER REFERENCES cars(id) ON DELETE CASCADE,
+      date TEXT NOT NULL,
+      kms INTEGER NOT NULL,
+      liters REAL NOT NULL,
+      price_per_liter REAL NOT NULL,
+      cost REAL NOT NULL,
+      full_tank INTEGER DEFAULT 1,
+      receipt_image TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('[Database] Error verifying/creating "fuel_logs" table:', err.message);
+    } else {
+      console.log('[Database] "fuel_logs" database table verified.');
+    }
+  });
+
+  // Verify and migrate the receipt_image column in fuel_logs if it is missing (backwards compatibility)
+  db.all('PRAGMA table_info(fuel_logs)', [], (err, rows) => {
+    if (err) {
+      console.error('[Database] Error checking "fuel_logs" columns:', err.message);
+      return;
+    }
+    
+    const hasReceiptImage = rows.some((col) => col.name === 'receipt_image');
+    if (!hasReceiptImage) {
+      console.log('[Database] Migrating database: adding "receipt_image" column to "fuel_logs" table...');
+      db.run('ALTER TABLE fuel_logs ADD COLUMN receipt_image TEXT', (alterErr) => {
+        if (alterErr) {
+          console.error('[Database] Migration failed (adding receipt_image to fuel_logs):', alterErr.message);
+        } else {
+          console.log('[Database] Migration successful: "receipt_image" column added to "fuel_logs" table.');
+        }
+      });
+    }
+  });
+
   // 3. Perform migration: Check if "car_id" exists in the "records" table
   db.all('PRAGMA table_info(records)', [], (err, rows) => {
     if (err) {
