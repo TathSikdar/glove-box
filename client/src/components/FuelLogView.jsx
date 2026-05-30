@@ -219,7 +219,7 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
     <div className="fuel-view-container fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
       
       {/* Top Section: Form and Real-time Calculator */}
-      <section className="form-grid" style={{ gridTemplateColumns: window.innerWidth > 768 ? '1.2fr 0.8fr' : '1fr', gap: '2rem' }}>
+      <section className="fuel-view-split">
         
         {/* Form panel */}
         <div className="card-glass p-6" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -229,7 +229,7 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
           </div>
 
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.15rem' }}>
-            <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="form-grid">
               <div className="form-group">
                 <label htmlFor="fuel-date">Fill-Up Date</label>
                 <input
@@ -253,7 +253,7 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
               </div>
             </div>
 
-            <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="form-grid">
               <div className="form-group">
                 <label htmlFor="fuel-liters">Volume Filled (Liters)</label>
                 <input
@@ -501,7 +501,7 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
           </div>
 
           {/* Secondary stats row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+          <div className="stats-grid">
             <div className="card-glass p-4" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Total Fuel Cost</span>
               <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0 }}>${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
