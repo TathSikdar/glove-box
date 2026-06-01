@@ -24,6 +24,8 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
   const {
     currentKms,
     totalCost,
+    maintenanceCost = 0,
+    fuelCost = 0,
     logsCount,
     lastOilChangeKms,
     lastOilChangeDate,
@@ -37,6 +39,25 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
   // Configuration settings for oil change gauge (reads custom car specs)
   const OIL_CHANGE_INTERVAL = oilInterval || 8000;
   const OIL_CHANGE_MONTHS = oilMonths || 6;
+
+  // Calculate Average Fuel Economy from Fuel Logs
+  const sortedLogs = [...fuelLogs].sort((a, b) => a.kms - b.kms);
+  let totalLitersForEcon = 0;
+  let totalDistanceForEcon = 0;
+  for (let i = 1; i < sortedLogs.length; i++) {
+    const current = sortedLogs[i];
+    const previous = sortedLogs[i - 1];
+    if (current.full_tank === 1 && previous.full_tank === 1) {
+      const distance = current.kms - previous.kms;
+      if (distance > 0) {
+        totalLitersForEcon += current.liters;
+        totalDistanceForEcon += distance;
+      }
+    }
+  }
+  const avgEconomy = totalDistanceForEcon > 0
+    ? parseFloat(((totalLitersForEcon / totalDistanceForEcon) * 100).toFixed(2))
+    : null;
 
   /**
    * Generates and downloads a clean, sanitised CSV spreadsheet file
@@ -943,17 +964,38 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
                 Log an <strong>Oil Change</strong> entry to enable oil interval alerts!
               </p>
             )}
-            <button
-              type="button"
-              className="btn btn-primary btn-glow mt-4"
-              onClick={() => setView('add')}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              Log Service / Modification
-            </button>
+            <div style={{ display: 'flex', gap: '12px', marginTop: '1.25rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-glow"
+                onClick={() => setView('fuel')}
+                style={{ flex: 1, whiteSpace: 'nowrap', padding: '0.75rem 1rem' }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '6px' }}>
+                  <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path>
+                </svg>
+                Log Fuel
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setView('add')}
+                style={{ 
+                  flex: 1,
+                  whiteSpace: 'nowrap',
+                  padding: '0.75rem 1rem',
+                  borderColor: 'rgba(0, 242, 254, 0.4)', 
+                  color: 'var(--neon-teal)',
+                  backgroundColor: 'rgba(0, 242, 254, 0.05)'
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: '6px' }}>
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Log Service
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -975,6 +1017,18 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
         </div>
 
         <div className="metric-card card-glass">
+          <div className="metric-icon" style={{ backgroundColor: 'rgba(255, 171, 0, 0.1)', color: 'var(--warning-orange)' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path>
+            </svg>
+          </div>
+          <div className="metric-details">
+            <span className="metric-label">Average Fuel Economy</span>
+            <h3 className="metric-value">{avgEconomy !== null ? avgEconomy : '--'} <span className="unit">L/100km</span></h3>
+          </div>
+        </div>
+
+        <div className="metric-card card-glass">
           <div className="metric-icon" style={{ backgroundColor: 'rgba(99, 102, 241, 0.1)', color: '#6366f1' }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="12" y1="1" x2="12" y2="23"></line>
@@ -983,7 +1037,33 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
           </div>
           <div className="metric-details">
             <span className="metric-label">Total Expenses</span>
-            <h3 className="metric-value">${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
+            <h3 className="metric-value"><span className="unit">$</span>{totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
+          </div>
+        </div>
+
+        <div className="metric-card card-glass">
+          <div className="metric-icon" style={{ backgroundColor: 'rgba(236, 72, 153, 0.1)', color: '#ec4899' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+            </svg>
+          </div>
+          <div className="metric-details">
+            <span className="metric-label">Service Expenses</span>
+            <h3 className="metric-value"><span className="unit">$</span>{maintenanceCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
+          </div>
+        </div>
+
+        <div className="metric-card card-glass">
+          <div className="metric-icon" style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 22v-8c0-1.1.9-2 2-2h14a2 2 0 0 1 2 2v8"></path>
+              <path d="M18 12V5a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v7"></path>
+            </svg>
+          </div>
+          <div className="metric-details">
+            <span className="metric-label">Fuel Expenses</span>
+            <h3 className="metric-value"><span className="unit">$</span>{fuelCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
           </div>
         </div>
 
@@ -997,8 +1077,8 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
             </div>
-            <div class="metric-details">
-              <span className="metric-label">Logged Logs</span>
+            <div className="metric-details">
+              <span className="metric-label">Total Records</span>
               <h3 className="metric-value">{logsCount}</h3>
             </div>
           </div>
@@ -1329,9 +1409,7 @@ export default function Dashboard({ stats, recentRecords, records = [], fuelLogs
                         <span className="timeline-cost">${record.cost.toFixed(2)}</span>
                       </div>
                       <div className="timeline-meta">
-                        <span>{record.kms.toLocaleString()} km</span>
-                        <span className="dot">•</span>
-                        <span>{new Date(record.date + 'T00:00:00').toLocaleDateString()}</span>
+                        <span>{record.kms.toLocaleString()} km • {new Date(record.date + 'T00:00:00').toLocaleDateString()}</span>
                       </div>
                     </div>
                   </div>

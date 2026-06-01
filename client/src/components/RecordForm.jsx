@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import DocumentScanner from './DocumentScanner';
 import CategoryIcon from './CategoryIcon';
+import { downscaleImage } from '../utils/scannerUtils';
 
 /**
  * Form for adding/editing records.
@@ -152,14 +153,20 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
    * and opens the DocumentScanner.
    * @param {!React.ChangeEvent<!HTMLInputElement>} e Form event.
    */
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // Create a local source representation of the raw image
-    const sourceUrl = URL.createObjectURL(file);
-    setRawImageSrc(sourceUrl);
-    setShowScanner(true);
+    // To prevent mobile browser memory crashes (OOM), downscale large camera photos
+    try {
+      const safeBlob = await downscaleImage(file, 1600);
+      const sourceUrl = URL.createObjectURL(safeBlob);
+      setRawImageSrc(sourceUrl);
+      setShowScanner(true);
+    } catch (err) {
+      console.error('Failed to downscale image:', err);
+      alert('Error loading image. Please try again.');
+    }
   };
 
   /**
@@ -503,17 +510,10 @@ export default function RecordForm({ editRecord, activeCarId, onSubmit, onCancel
             {/* Actions */}
             <div className="form-actions mt-8">
               <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={onCancel}
-                disabled={isSubmitting}
-              >
-                Cancel
-              </button>
-              <button
                 type="submit"
                 className="btn btn-primary btn-glow"
                 disabled={isSubmitting}
+                style={{ width: '100%', justifyContent: 'center' }}
               >
                 {isSubmitting ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

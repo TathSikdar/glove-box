@@ -16,10 +16,26 @@ import CategoryIcon from './CategoryIcon';
  * @param {function(!Object): void} props.onEdit Triggers edit view state.
  * @return {!React.ReactElement}
  */
-export default function RecordList({ records, onDelete, onEdit }) {
+export default function RecordList({ records = [], fuelLogs = [], onDelete, onDeleteFuel, onEdit }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategoryFilter, setActiveCategoryFilter] = useState('all');
   const [expandedRecordId, setExpandedRecordId] = useState(null);
+
+  // Normalize maintenance and fuel logs into a unified timeline format
+  const unifiedLogs = [
+    ...records.map(r => ({ ...r, timelineType: 'maintenance' })),
+    ...fuelLogs.map(f => ({ ...f, timelineType: 'fuel', title: 'Fuel Fill-up', category: 'fuel' }))
+  ].sort((a, b) => {
+    const dateA = new Date(a.date).getTime();
+    const dateB = new Date(b.date).getTime();
+    if (dateB !== dateA) return dateB - dateA;
+    return b.kms - a.kms;
+  });
+
+  const toggleExpandCard = (id, timelineType) => {
+    const compoundId = `${timelineType}-${id}`;
+    setExpandedRecordId(expandedRecordId === compoundId ? null : compoundId);
+  };
 
   // Lightbox zoom and pan state
   const [lightboxImg, setLightboxImg] = useState(null);
@@ -46,24 +62,18 @@ export default function RecordList({ records, onDelete, onEdit }) {
   }, [lightboxImg]);
 
   /**
-   * Toggles the card expanded notes drawer.
-   * @param {number} id Record unique identifier.
-   */
-  const toggleExpandCard = (id) => {
-    setExpandedRecordId(expandedRecordId === id ? null : id);
-  };
-
-  /**
    * Filters records list based on matching text search and category select.
    */
-  const filteredRecords = records.filter((record) => {
+  const filteredRecords = unifiedLogs.filter((record) => {
     const matchesSearch =
-      record.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.title && record.title.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (record.notes && record.notes.toLowerCase().includes(searchTerm.toLowerCase()));
 
     let matchesCategory = false;
     if (activeCategoryFilter === 'all') {
       matchesCategory = true;
+    } else if (activeCategoryFilter === 'fuel') {
+      matchesCategory = record.category === 'fuel';
     } else if (activeCategoryFilter === 'oil_change') {
       matchesCategory = record.category === 'oil_change';
     } else if (activeCategoryFilter === 'transmission') {
@@ -201,7 +211,7 @@ export default function RecordList({ records, onDelete, onEdit }) {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-
+        
         <div className="filter-pill-tray mt-4">
           <button
             type="button"
@@ -210,6 +220,14 @@ export default function RecordList({ records, onDelete, onEdit }) {
             style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
             All Logs
+          </button>
+          <button
+            type="button"
+            className={`filter-pill ${activeCategoryFilter === 'fuel' ? 'active' : ''}`}
+            onClick={() => setActiveCategoryFilter('fuel')}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            ⛽ Fuel
           </button>
           <button
             type="button"
@@ -271,82 +289,38 @@ export default function RecordList({ records, onDelete, onEdit }) {
       </section>
 
       {/* Main Records Listing */}
-      <section className="records-list">
-        {filteredRecords.length === 0 ? (
-          <div className="empty-state card-glass p-8 text-center">
-            <p className="text-secondary">No vehicle records matching search criteria.</p>
+      <section className="record-list-grid">
+        {unifiedLogs.length === 0 ? (
+          <div className="empty-state text-center fade-in">
+            <span style={{ fontSize: '3rem' }}>📂</span>
+            <h3>No Records Found</h3>
+            <p className="text-secondary">Start logging your vehicle's history to see it here.</p>
+          </div>
+        ) : filteredRecords.length === 0 ? (
+          <div className="empty-state text-center fade-in">
+            <span style={{ fontSize: '3rem' }}>🔍</span>
+            <h3>No Matches</h3>
+            <p className="text-secondary">No records match your search or category filter.</p>
           </div>
         ) : (
           filteredRecords.map((record) => {
-            const isExpanded = expandedRecordId === record.id;
-            
-            // Assign custom accent coloring and labels based on category
-            let label = 'Custom Maintenance';
-            let color = 'rgba(234, 179, 8, 0.1)';
-            let textColor = '#eab308';
-
-            if (record.category === 'oil_change') {
-              label = 'Oil Change';
-              color = 'rgba(0, 242, 254, 0.1)';
-              textColor = 'var(--neon-teal)';
-            } else if (record.category === 'transmission_fluid' || record.category === 'transmission_oil') {
-              label = 'Transmission Fluid';
-              color = 'rgba(99, 102, 241, 0.1)';
-              textColor = '#6366f1';
-            } else if (record.category === 'cabin_air_filter') {
-              label = 'Cabin Air Filter';
-              color = 'rgba(16, 185, 129, 0.1)';
-              textColor = '#10b981';
-            } else if (record.category === 'engine_air_filter' || record.category === 'air_filter') {
-              label = 'Engine Air Filter';
-              color = 'rgba(16, 185, 129, 0.1)';
-              textColor = '#10b981';
-            } else if (record.category === 'brake_pads') {
-              label = 'Brake Pads';
-              color = 'rgba(239, 68, 68, 0.1)';
-              textColor = '#ef4444';
-            } else if (record.category === 'brake_rotor') {
-              label = 'Brake Rotors';
-              color = 'rgba(239, 68, 68, 0.1)';
-              textColor = '#ef4444';
-            } else if (record.category === 'brake_fluid') {
-              label = 'Brake Fluid';
-              color = 'rgba(239, 68, 68, 0.1)';
-              textColor = '#ef4444';
-            } else if (record.category === 'spark_plugs') {
-              label = 'Spark Plugs';
-              color = 'rgba(168, 85, 247, 0.1)';
-              textColor = '#a855f7';
-            } else if (record.category === 'modification') {
-              label = 'Modification';
-              color = 'rgba(236, 72, 153, 0.1)';
-              textColor = '#ec4899';
-            }
+            const compoundId = `${record.timelineType}-${record.id}`;
+            const isExpanded = expandedRecordId === compoundId;
 
             return (
               <div
-                key={record.id}
-                className={`record-card card-glass ${isExpanded ? 'expanded' : ''}`}
-                onClick={() => toggleExpandCard(record.id)}
+                key={compoundId}
+                className="record-card card-glass fade-in"
+                onClick={() => toggleExpandCard(record.id, record.timelineType)}
               >
-                {/* Header Summary Row */}
-                <div className="record-header-row">
-                  <div className="record-icon-title">
-                    <div
-                      className="record-category-badge"
-                      style={{
-                        backgroundColor: color,
-                        color: textColor,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
-                    >
-                      <CategoryIcon category={record.category} size={15} />
-                    </div>
-                    <div className="record-main-info">
-                      <h4>{record.title}</h4>
-                      <span className="record-label-badge" style={{ color: textColor }}>{label}</span>
+                <div className="record-card-header">
+                  <div className="record-card-primary">
+                    <CategoryIcon category={record.category} />
+                    <div className="record-meta">
+                      <h4 className="record-title">{record.title}</h4>
+                      <span className="record-category-label">
+                        {record.category === 'fuel' ? 'Gasoline / Fuel' : record.category.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      </span>
                     </div>
                   </div>
 
@@ -390,35 +364,70 @@ export default function RecordList({ records, onDelete, onEdit }) {
 
                       {/* Notes / Descriptions */}
                       <div className="expanded-left">
-                        <h5>Description & Observations</h5>
-                        <p className="notes-text text-sm">
-                          {record.notes ? record.notes : <em className="text-secondary">No notes written.</em>}
-                        </p>
-                        
-                        <div className="expanded-stats mt-4">
-                          <div className="cost-stat">
-                            <span className="stat-label">Total Expense:</span>
-                            <span className="stat-val">${record.cost.toFixed(2)}</span>
-                          </div>
-                        </div>
+                        {record.timelineType === 'fuel' ? (
+                          <>
+                            <h5>Fill-up Details</h5>
+                            <div className="expanded-stats mt-4">
+                              <div className="cost-stat">
+                                <span className="stat-label">Volume Pumped:</span>
+                                <span className="stat-val">{record.liters.toFixed(2)} L</span>
+                              </div>
+                              <div className="cost-stat mt-2">
+                                <span className="stat-label">Price per Liter:</span>
+                                <span className="stat-val">${record.price_per_liter.toFixed(3)}</span>
+                              </div>
+                              <div className="cost-stat mt-2" style={{ color: 'var(--neon-teal)' }}>
+                                <span className="stat-label">Total Expense:</span>
+                                <span className="stat-val">${record.cost.toFixed(2)}</span>
+                              </div>
+                              <div className="cost-stat mt-2">
+                                <span className="stat-label">Tank Status:</span>
+                                <span className="stat-val">{record.full_tank === 1 ? 'Filled to Full' : 'Partial Fill'}</span>
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <h5>Description & Observations</h5>
+                            <p className="notes-text text-sm">
+                              {record.notes ? record.notes : <em className="text-secondary">No notes written.</em>}
+                            </p>
+                            
+                            <div className="expanded-stats mt-4">
+                              <div className="cost-stat">
+                                <span className="stat-label">Total Expense:</span>
+                                <span className="stat-val">${record.cost.toFixed(2)}</span>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
 
                     {/* Actions Panel */}
                     <div className="record-actions-tray mt-6">
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => onEdit(record)}
-                      >
-                        Edit Fields
-                      </button>
+                      {record.timelineType === 'maintenance' && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => onEdit(record)}
+                        >
+                          Edit Fields
+                        </button>
+                      )}
+                      
                       <button
                         type="button"
                         className="btn-danger-link btn-sm"
                         onClick={() => {
-                          if (confirm('Are you sure you want to permanently delete this maintenance log? This will also remove the saved receipt.')) {
-                            onDelete(record.id);
+                          if (record.timelineType === 'fuel') {
+                            if (confirm('Are you sure you want to permanently delete this fuel log?')) {
+                              onDeleteFuel(record.id);
+                            }
+                          } else {
+                            if (confirm('Are you sure you want to permanently delete this maintenance log? This will also remove the saved receipt.')) {
+                              onDelete(record.id);
+                            }
                           }
                         }}
                       >

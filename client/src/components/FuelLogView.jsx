@@ -8,6 +8,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import DocumentScanner from './DocumentScanner';
 
+import { downscaleImage, applyOcrOptimizationFilter } from '../utils/scannerUtils';
+import { extractReceiptData } from '../utils/ocrUtils';
+
 /**
  * FuelLogView component.
  * @param {!Object} props Component properties.
@@ -17,7 +20,7 @@ import DocumentScanner from './DocumentScanner';
  * @param {function(): void} props.onRefresh Callback to trigger a data reload.
  * @return {!React.ReactElement}
  */
-export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onRefresh }) {
+export default function FuelLogView({ activeCarId, activeCar, onRefresh }) {
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [kms, setKms] = useState('');
   const [liters, setLiters] = useState('');
@@ -36,17 +39,6 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
   const [isScanningOCR, setIsScanningOCR] = useState(false);
   const [ocrMessage, setOcrMessage] = useState(null);
 
-  // Pre-fill next odometer reading based on the most recent log to improve mobile logging speed
-  useEffect(() => {
-    if (fuelLogs.length > 0) {
-      // Find maximum odometer logged
-      const maxKms = Math.max(...fuelLogs.map((l) => l.kms));
-      setKms(maxKms ? maxKms.toString() : '');
-    } else {
-      setKms('');
-    }
-  }, [fuelLogs, activeCarId]);
-
   // Clean up object URLs
   useEffect(() => {
     return () => {
@@ -59,57 +51,29 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
     };
   }, [receiptPreviewUrl, rawImageSrc]);
 
-  // Chronological sorting (mileage ascending) for economy calculations
-  const sortedLogs = [...fuelLogs].sort((a, b) => a.kms - b.kms);
-
-  // 1. Calculate Fuel Economy & Efficiency Math
-  let totalLitersForEcon = 0;
-  let totalDistanceForEcon = 0;
-  const calculatedEconMap = {};
-
-  for (let i = 1; i < sortedLogs.length; i++) {
-    const current = sortedLogs[i];
-    const previous = sortedLogs[i - 1];
-
-    // Economy is calculated between consecutive full tank fill-ups
-    if (current.full_tank === 1 && previous.full_tank === 1) {
-      const distance = current.kms - previous.kms;
-      if (distance > 0) {
-        const econ = (current.liters / distance) * 100;
-        calculatedEconMap[current.id] = parseFloat(econ.toFixed(2));
-        
-        totalLitersForEcon += current.liters;
-        totalDistanceForEcon += distance;
-      }
-    }
-  }
-
-  // 2. Aggregate Fuel Stats
-  const avgEconomy = totalDistanceForEcon > 0
-    ? parseFloat(((totalLitersForEcon / totalDistanceForEcon) * 100).toFixed(2))
-    : null;
-
-  const totalCost = fuelLogs.reduce((acc, log) => acc + log.cost, 0);
-  const totalVolume = fuelLogs.reduce((acc, log) => acc + log.liters, 0);
-  
-  const distanceTraveled = sortedLogs.length >= 2
-    ? sortedLogs[sortedLogs.length - 1].kms - sortedLogs[0].kms
-    : 0;
 
   // Real-time Total Cost preview calculated as the user types
   const numericLiters = parseFloat(liters) || 0;
   const numericPrice = parseFloat(pricePerLiter) || 0;
   const totalCostPreview = (numericLiters * numericPrice).toFixed(2);
 
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const sourceUrl = URL.createObjectURL(file);
-    setRawImageSrc(sourceUrl);
-    setShowScanner(true);
+
+    // Downscale massive camera photos to prevent mobile OOM tab crashes
+    try {
+      const safeBlob = await downscaleImage(file, 1600);
+      const sourceUrl = URL.createObjectURL(safeBlob);
+      setRawImageSrc(sourceUrl);
+      setShowScanner(true);
+    } catch (err) {
+      console.error('Failed to downscale image:', err);
+      alert('Error loading image. Please try again.');
+    }
   };
 
-  const handleScanSave = (blob) => {
+  const handleScanSave = async (blob) => {
     const previewUrl = URL.createObjectURL(blob);
     setScannedBlob(blob);
     setReceiptPreviewUrl(previewUrl);
@@ -120,18 +84,46 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
     }
     setRawImageSrc(null);
 
-    // Trigger simulated OCR text extraction
+    // Trigger on-device real OCR text extraction
     setIsScanningOCR(true);
-    setOcrMessage(null);
-    setTimeout(() => {
-      // Simulate highly realistic OCR values
-      const parsedLiters = (Math.random() * (55.0 - 38.0) + 38.0).toFixed(2);
-      const parsedPrice = (Math.random() * (1.829 - 1.459) + 1.459).toFixed(3);
-      setLiters(parsedLiters);
-      setPricePerLiter(parsedPrice);
+    setOcrMessage('Waking up OCR Engine...');
+
+    try {
+      setOcrMessage('Transmitting receipt to Gemini Vision AI...');
+      
+      const formData = new FormData();
+      formData.append('receipt', blob, 'receipt.jpg');
+      
+      const res = await fetch('/api/parse-receipt', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!res.ok) {
+        throw new Error('Backend failed to parse receipt');
+      }
+      
+      setOcrMessage('Analyzing image and verifying math...');
+      const result = await res.json();
+      const parsed = result.data;
+
+      // Populate results
+      if (parsed.liters || parsed.pricePerLiter) {
+        if (parsed.liters) setLiters(parsed.liters);
+        if (parsed.pricePerLiter) setPricePerLiter(parsed.pricePerLiter);
+        
+        const L = parsed.liters || '??';
+        const P = parsed.pricePerLiter || '??';
+        setOcrMessage(`✨ Gemini Vision AI auto-filled Volume (${L} L) and Price ($${P}/L) from receipt!`);
+      } else {
+        setOcrMessage(`⚠️ Could not automatically detect volume or price from the receipt text. Please enter manually.`);
+      }
+    } catch (err) {
+      console.error(err);
+      setOcrMessage('❌ Gemini AI failed to process the image.');
+    } finally {
       setIsScanningOCR(false);
-      setOcrMessage(`✨ Smart OCR auto-filled Volume (${parsedLiters} L) and Price ($${parsedPrice}/L) from receipt!`);
-    }, 1200);
+    }
   };
 
   const handleRemoveReceipt = () => {
@@ -216,10 +208,8 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
   };
 
   return (
-    <div className="fuel-view-container fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-      
-      {/* Top Section: Form and Real-time Calculator */}
-      <section className="fuel-view-split">
+    <>
+      <div className="form-container fade-in">
         
         {/* Form panel */}
         <div className="card-glass p-6" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -461,192 +451,7 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
             </button>
           </form>
         </div>
-
-        {/* Analytics Widgets Panel */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          
-          {/* Economy radial gauge / highlight */}
-          <div className="card-glass p-5 text-center" style={{ 
-            display: 'flex', 
-            flexDirection: 'column', 
-            alignItems: 'center', 
-            justifyContent: 'center', 
-            gap: '10px',
-            background: 'var(--bg-slate-card)',
-            flex: 1
-          }}>
-            <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)' }}>
-              Average Fuel Economy
-            </span>
-            {avgEconomy !== null ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <h2 style={{ fontSize: '2.5rem', fontWeight: 900, background: 'var(--gradient-neon)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', margin: 0, letterSpacing: '-1px' }}>
-                  {avgEconomy}
-                </h2>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--neon-teal)', marginTop: '2px' }}>
-                  Liters per 100 km
-                </span>
-                <p className="text-secondary" style={{ fontSize: '11px', margin: '8px 0 0 0', maxWidth: '180px', lineHeight: '1.4' }}>
-                  Calculated across {totalDistanceForEcon.toLocaleString()} km of consecutive full fill-ups.
-                </p>
-              </div>
-            ) : (
-              <div style={{ padding: '10px 0' }}>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>Insufficient Data</h3>
-                <p className="text-secondary" style={{ fontSize: '11px', margin: '6px 0 0 0', maxWidth: '180px', lineHeight: '1.4' }}>
-                  Log at least <strong>two consecutive full tank</strong> fill-ups to calculate fuel economy alerts!
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Secondary stats row */}
-          <div className="stats-grid">
-            <div className="card-glass p-4" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Total Fuel Cost</span>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0 }}>${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</h3>
-            </div>
-            <div className="card-glass p-4" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Volume Filled</span>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0 }}>{totalVolume.toLocaleString(undefined, { maximumFractionDigits: 1 })} <span style={{ fontSize: '11px', opacity: 0.7 }}>L</span></h3>
-            </div>
-          </div>
-
-          <div className="card-glass p-4" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Distance Tracked (Span)</span>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0 }}>{distanceTraveled.toLocaleString()} <span style={{ fontSize: '11px', opacity: 0.7 }}>km</span></h3>
-          </div>
-
-        </div>
-      </section>
-
-      {/* Bottom Section: Fuel Logs History List */}
-      <section className="card-glass p-6">
-        <div style={{ marginBottom: '1.25rem' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0 }}>📋 Fuel Fill-Up History</h2>
-          <p className="text-secondary text-xs" style={{ margin: '4px 0 0 0' }}>Exhaustive record of all fuel purchases tied to this vehicle.</p>
-        </div>
-
-        {fuelLogs.length > 0 ? (
-          <div className="scrollable-table-container" style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '600px' }}>
-              <thead>
-                <tr style={{ borderBottom: '2px solid var(--border-glass)' }}>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Date</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Odometer</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Liters</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Price/L</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Total Cost</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Efficiency</th>
-                  <th style={{ padding: '12px 8px', fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', textAlign: 'right' }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fuelLogs.map((log) => {
-                  const logEcon = calculatedEconMap[log.id];
-                  return (
-                    <tr key={log.id} style={{ borderBottom: '1px solid var(--border-glass)' }} className="table-row-hover">
-                      <td style={{ padding: '14px 8px', fontWeight: 600 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          {new Date(log.date + 'T00:00:00').toLocaleDateString()}
-                          {log.receipt_image && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReceiptPreviewUrl(`/uploads/${log.receipt_image}`);
-                                setShowPreviewLightbox(true);
-                              }}
-                              title="View Scanned Fuel Receipt"
-                              style={{
-                                background: 'transparent',
-                                border: 'none',
-                                cursor: 'pointer',
-                                padding: 0,
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                color: 'var(--neon-teal)'
-                              }}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-                                <circle cx="12" cy="13" r="4"></circle>
-                              </svg>
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '14px 8px', fontWeight: 700 }}>
-                        {log.kms.toLocaleString()} km
-                      </td>
-                      <td style={{ padding: '14px 8px', color: 'var(--text-secondary)' }}>
-                        {log.liters.toFixed(2)} L
-                      </td>
-                      <td style={{ padding: '14px 8px', color: 'var(--text-secondary)' }}>
-                        ${log.price_per_liter.toFixed(3)}
-                      </td>
-                      <td style={{ padding: '14px 8px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        ${log.cost.toFixed(2)}
-                      </td>
-                      <td style={{ padding: '14px 8px' }}>
-                        {log.full_tank === 1 ? (
-                          logEcon ? (
-                            <span className="badge-econ-pill" style={{
-                              background: 'rgba(0, 242, 254, 0.08)',
-                              border: '1px solid rgba(0, 242, 254, 0.2)',
-                              color: 'var(--neon-teal)',
-                              padding: '2px 8px',
-                              borderRadius: '4px',
-                              fontSize: '11px',
-                              fontWeight: 700
-                            }}>
-                              🟢 {logEcon} L/100k
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: '11px', opacity: 0.6 }}>⚓ Full (Reference)</span>
-                          )
-                        ) : (
-                          <span style={{ fontSize: '11px', opacity: 0.5 }}>⚠️ Partial fill</span>
-                        )}
-                      </td>
-                      <td style={{ padding: '14px 8px', textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          className="car-item-delete-btn"
-                          onClick={() => handleDelete(log.id)}
-                          title="Delete fuel log entry"
-                          style={{
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: '4px',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            borderRadius: '4px'
-                          }}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                          </svg>
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
-            <span style={{ fontSize: '2.5rem' }}>⛽</span>
-            <h3 style={{ fontSize: '1.05rem', fontWeight: 700, margin: '8px 0 0 0' }}>No Fuel Logs Found</h3>
-            <p className="text-secondary text-sm" style={{ margin: '4px 0 0 0', maxWidth: '280px', marginLeft: 'auto', marginRight: 'auto', lineHeight: '1.5' }}>
-              Log your first fuel purchase above to begin tracking L/100km fuel economy and cost aggregates!
-            </p>
-          </div>
-        )}
-      </section>
+      </div>
 
       {/* Camera Document Scanner Modal overlay */}
       {showScanner && rawImageSrc && (
@@ -709,7 +514,6 @@ export default function FuelLogView({ activeCarId, activeCar, fuelLogs = [], onR
           </div>
         </div>
       )}
-
-    </div>
+    </>
   );
 }

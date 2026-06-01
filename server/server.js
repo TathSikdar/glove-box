@@ -11,7 +11,12 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const { spawn } = require('child_process');
 const db = require('./db');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -53,6 +58,167 @@ const upload = multer({
       return cb(null, true);
     }
     cb(new Error('Only JPEG, JPG, PNG, and WEBP image files are allowed.'));
+  }
+});
+
+// ==========================================
+// REST API: OpenCV Receipt Stitching
+// ==========================================
+
+/**
+ * POST /api/stitch
+ * Receives multiple receipt segments and uses OpenCV in a Python child process
+ * to intelligently stitch them via feature matching.
+ */
+app.post('/api/stitch', upload.array('segments', 10), (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json({ error: 'No image segments provided.' });
+  }
+
+  const filePaths = req.files.map(f => f.path);
+  
+  if (filePaths.length === 1) {
+    // If only one file, no need to stitch
+    const fileUrl = `/uploads/${req.files[0].filename}`;
+    return res.json({ success: true, url: fileUrl, filename: req.files[0].filename });
+  }
+
+  const outputFilename = `receipt-stitched-${Date.now()}-${Math.round(Math.random() * 1e9)}.jpg`;
+  const outputPath = path.join(uploadsDir, outputFilename);
+
+  const pythonScript = path.join(__dirname, 'utils', 'stitch.py');
+  
+  // Use 'python' on Windows local dev, and 'python3' inside the Alpine Linux Docker container
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  const pythonProcess = spawn(pythonCmd, [pythonScript, outputPath, ...filePaths]);
+
+  let stdoutData = '';
+  let stderrData = '';
+
+  pythonProcess.stdout.on('data', (data) => {
+    stdoutData += data.toString();
+  });
+
+  pythonProcess.stderr.on('data', (data) => {
+    stderrData += data.toString();
+  });
+
+  pythonProcess.on('close', (code) => {
+    // Cleanup temporary individual segments to save space
+    filePaths.forEach(p => {
+      fs.unlink(p, (err) => {
+        if (err) console.error('[Stitcher] Error deleting temporary segment:', err);
+      });
+    });
+
+    if (code !== 0 || stdoutData.includes('STITCH_ERROR')) {
+      console.error('[Stitcher] Python process exited with code', code);
+      console.error('[Stitcher] stderr:', stderrData);
+      console.error('[Stitcher] stdout:', stdoutData);
+      
+      // Usually fails if there aren't enough overlapping features between photos
+      return res.status(500).json({ error: 'Image stitching failed. Make sure the photos have enough overlapping text to align.' });
+    }
+
+    res.json({
+      success: true,
+      url: `/uploads/${outputFilename}`,
+      filename: outputFilename
+    });
+  });
+});
+
+/**
+ * POST /api/detect-corners
+ * Uploads a single image and returns 4 normalized quad corners via OpenCV.
+ */
+app.post('/api/detect-corners', upload.single('image'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No image provided for edge detection.' });
+  }
+
+  const filePath = req.file.path;
+  const scriptPath = path.join(__dirname, 'utils', 'detect_corners.py');
+
+  const pythonProcess = spawn('python', [scriptPath, filePath]);
+
+  let stdoutData = '';
+  let stderrData = '';
+
+  pythonProcess.stdout.on('data', (data) => {
+    stdoutData += data.toString();
+  });
+
+  pythonProcess.stderr.on('data', (data) => {
+    stderrData += data.toString();
+  });
+
+  pythonProcess.on('close', (code) => {
+    // Delete the temporary image used for detection
+    fs.unlink(filePath, (err) => {
+      if (err) console.error('[Detector] Error deleting temp image:', err);
+    });
+
+    if (code !== 0 || stdoutData.includes('DETECT_ERROR')) {
+      console.error('[Detector] Python process failed with code', code);
+      console.error('[Detector] stderr:', stderrData);
+      return res.status(500).json({ error: 'Failed to detect edges' });
+    }
+
+    try {
+      // The Python script prints the JSON array as its last output line
+      const lines = stdoutData.trim().split('\n');
+      const jsonStr = lines[lines.length - 1];
+      const corners = JSON.parse(jsonStr);
+      res.json(corners);
+    } catch (err) {
+      console.error('[Detector] JSON Parse Error:', err);
+      res.status(500).json({ error: 'Invalid output from edge detector' });
+    }
+  });
+});
+
+/**
+ * POST /api/parse-receipt
+ * Parses a gas station receipt using Google Gemini 1.5 Flash Vision LLM.
+ * Expects a single image upload.
+ */
+app.post('/api/parse-receipt', upload.single('receipt'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No receipt image provided.' });
+  }
+
+  try {
+    const base64Image = fs.readFileSync(req.file.path).toString("base64");
+    
+    const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+    const result = await model.generateContent([
+      'Extract the total cost, price per liter, and total volume (liters/gallons) from this gas station receipt. Use mathematics (price_per_liter * volume = total) to verify your findings if the receipt is hard to read. Return ONLY pure JSON with the keys: "total", "liters", "pricePerLiter". Do not include markdown code blocks, backticks, or any other text, just raw JSON.',
+      {
+        inlineData: {
+          data: base64Image,
+          mimeType: req.file.mimetype
+        }
+      }
+    ]);
+
+    const outputText = result.response.text().trim();
+    // Clean up potential markdown formatting if the model disobeys
+    const cleanJson = outputText.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    const parsed = JSON.parse(cleanJson);
+
+    // Delete temp file
+    fs.unlink(req.file.path, () => {});
+
+    res.json({
+      success: true,
+      data: parsed
+    });
+  } catch (error) {
+    console.error('[Gemini OCR] Parse failure:', error);
+    fs.unlink(req.file.path, () => {});
+    res.status(500).json({ error: 'Failed to extract receipt data using Gemini.' });
   }
 });
 
@@ -511,6 +677,8 @@ app.get('/api/stats', (req, res) => {
     const stats = {
       currentKms: 0,
       totalCost: 0,
+      maintenanceCost: 0,
+      fuelCost: 0,
       logsCount: 0,
       lastOilChangeKms: null,
       lastOilChangeDate: null,
@@ -543,16 +711,13 @@ app.get('/api/stats', (req, res) => {
 
       stats.logsCount = rows.length;
 
-      if (rows.length === 0) {
-        return res.json(stats);
-      }
-
       let maxKms = 0;
       let maxOilKms = null;
       let maxOilDate = null; // Track date of most recent oil change
 
       rows.forEach((row) => {
         stats.totalCost += row.cost;
+        stats.maintenanceCost += row.cost;
         if (row.kms > maxKms) {
           maxKms = row.kms;
         }
@@ -567,32 +732,50 @@ app.get('/api/stats', (req, res) => {
         }
       });
 
-      stats.currentKms = maxKms;
-      stats.lastOilChangeKms = maxOilKms;
-      stats.lastOilChangeDate = maxOilDate;
+      // 3. Query fuel logs to include in total cost, maxKms, and log count
+      db.all('SELECT kms, cost FROM fuel_logs WHERE car_id = ?', [carId], (fuelErr, fuelRows) => {
+        if (fuelErr) {
+          console.error('[API] Error calculating fuel stats:', fuelErr.message);
+          return res.status(500).json({ error: 'Internal Server Error' });
+        }
 
-      // Mileage remaining alerts
-      if (maxOilKms !== null) {
-        const targetOilKms = maxOilKms + oilInterval;
-        stats.oilChangeDueInKms = targetOilKms - maxKms;
-      }
+        stats.logsCount += fuelRows.length;
 
-      // Time remaining countdown (whichever comes first)
-      if (maxOilDate !== null) {
-        // Expiration date = maxOilDate (YYYY-MM-DD) plus oilMonths
-        const targetDate = new Date(maxOilDate + 'T00:00:00');
-        targetDate.setMonth(targetDate.getMonth() + oilMonths);
-        
-        // Today at midnight
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        fuelRows.forEach((row) => {
+          stats.totalCost += row.cost;
+          stats.fuelCost += row.cost;
+          if (row.kms > maxKms) {
+            maxKms = row.kms;
+          }
+        });
 
-        const diffTime = targetDate - today;
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        stats.oilChangeDueInDays = diffDays;
-      }
+        stats.currentKms = maxKms;
+        stats.lastOilChangeKms = maxOilKms;
+        stats.lastOilChangeDate = maxOilDate;
 
-      res.json(stats);
+        // Mileage remaining alerts
+        if (maxOilKms !== null) {
+          const targetOilKms = maxOilKms + oilInterval;
+          stats.oilChangeDueInKms = targetOilKms - maxKms;
+        }
+
+        // Time remaining countdown (whichever comes first)
+        if (maxOilDate !== null) {
+          // Expiration date = maxOilDate (YYYY-MM-DD) plus oilMonths
+          const targetDate = new Date(maxOilDate + 'T00:00:00');
+          targetDate.setMonth(targetDate.getMonth() + oilMonths);
+          
+          // Today at midnight
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          const diffTime = targetDate - today;
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          stats.oilChangeDueInDays = diffDays;
+        }
+
+        res.json(stats);
+      });
     });
   });
 });

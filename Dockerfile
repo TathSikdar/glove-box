@@ -23,6 +23,9 @@ FROM node:22-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Install Python and OpenCV for smart receipt stitching
+RUN apk add --no-cache python3 py3-opencv
+
 # Copy server package manifests and install production dependencies
 COPY server/package*.json ./server/
 RUN npm ci --prefix server --only=production

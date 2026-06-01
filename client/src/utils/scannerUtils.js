@@ -71,7 +71,7 @@ export function computeHomography(w, h, srcQuad) {
     const dy1 = y1 - y2;
     const dy2 = y3 - y2;
 
-    const sol = solve2x2(dx1, dx2, -dx, dy1, dy2, -dy);
+    const sol = solve2x2(dx1, dx2, dx, dy1, dy2, dy);
     if (!sol) {
       return null;
     }
@@ -402,195 +402,287 @@ export function applyGrayscaleFilter(imageData) {
   return outputData;
 }
 
-export function autoDetectDocumentCorners(img) {
-  // Use a small offscreen canvas for extremely fast pixel operations (~0.2ms)
-  const w = 240;
-  const h = 320;
+/**
+ * Vertically merges an array of image blobs into a single tall, continuous image canvas.
+ * Ideal for combining multiple segments of a long receipt.
+ * @param {Array<Blob>} blobArray Array of image blobs to merge.
+ * @return {Promise<Blob>} A promise that resolves to the merged JPEG blob.
+ */
+export async function mergeImagesVertically(blobArray) {
+  if (!blobArray || blobArray.length === 0) return null;
+  if (blobArray.length === 1) return blobArray[0];
+
+  // Load all blobs into Image objects to read dimensions
+  const images = await Promise.all(blobArray.map(blob => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(img.src);
+        resolve(img);
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(blob);
+    });
+  }));
+
+  // Calculate final canvas dimensions
+  // Width will be the maximum width of all segments, height will be sum of all heights
+  const finalWidth = Math.max(...images.map(img => img.width));
+  const finalHeight = images.reduce((acc, img) => acc + img.height, 0);
+
   const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = finalWidth;
+  canvas.height = finalHeight;
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, w, h);
 
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
+  // Fill background with white in case of width differences
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, finalWidth, finalHeight);
 
-  // 1. Convert color channels to grayscaled luminance
-  const gray = new Uint8Array(w * h);
-  for (let i = 0; i < data.length; i += 4) {
-    gray[i / 4] = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+  // Draw images sequentially downwards
+  let currentY = 0;
+  for (const img of images) {
+    // Center smaller images horizontally if widths differ
+    const xOffset = (finalWidth - img.width) / 2;
+    ctx.drawImage(img, xOffset, currentY);
+    currentY += img.height;
   }
 
-  // 2. Bradley-Roth O(N) Adaptive Thresholding (via integral image)
-  // Perfectly handles variable gradients, uneven lighting, notches, and shadows.
-  const S = Math.round(w / 8); // Local block window width
-  const T = 0.15; // Threshold percentage
-  const intImg = new Int32Array(w * h);
-  
-  // Compute the integral image (summed-area table)
-  for (let y = 0; y < h; y++) {
-    let sum = 0;
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      sum += gray[idx];
-      if (y === 0) {
-        intImg[idx] = sum;
-      } else {
-        intImg[idx] = intImg[idx - w] + sum;
-      }
-    }
-  }
+  // Export to high-quality JPEG
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      resolve(blob);
+    }, 'image/jpeg', 0.90);
+  });
+}
 
-  // Binarize the grayscale image adaptively
-  const binary = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      
-      const x1 = Math.max(0, x - Math.floor(S / 2));
-      const x2 = Math.min(w - 1, x + Math.floor(S / 2));
-      const y1 = Math.max(0, y - Math.floor(S / 2));
-      const y2 = Math.min(h - 1, y + Math.floor(S / 2));
-      
-      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-      
-      let sum = intImg[y2 * w + x2];
-      if (x1 > 0) sum -= intImg[y2 * w + (x1 - 1)];
-      if (y1 > 0) sum -= intImg[(y1 - 1) * w + x2];
-      if (x1 > 0 && y1 > 0) sum += intImg[(y1 - 1) * w + (x1 - 1)];
-      
-      if (gray[idx] * count < sum * (1.0 - T)) {
-        binary[idx] = 0; // Dark background
-      } else {
-        binary[idx] = 255; // Bright paper foreground
-      }
-    }
-  }
+/**
+ * Downscales a raw high-resolution camera photo safely.
+ * Uses modern createImageBitmap for zero-RAM-spike native decoding where supported,
+ * preventing mobile browser Out-Of-Memory (OOM) crashes on 24MP+ images.
+ * @param {File|Blob} file The raw image file from the camera.
+ * @param {number} maxDim The maximum width dimension (e.g., 1600).
+ * @return {Promise<Blob>} A promise resolving to the downscaled JPEG blob.
+ */
+export async function downscaleImage(file, maxDim = 1200) {
+  return new Promise((resolve, reject) => {
+    try {
+      let canvas = document.createElement('canvas');
+      let ctx = canvas.getContext('2d');
 
-  // 3. Connected-Component Labeler (Connected Blob Flood Fill)
-  // Isolates the receipt paper itself and completely filters out ambient desk clutter or high frequency noise.
-  // Masks out the outer 3% margin to ignore fingers, scanning bezels, or image border artifacts.
-  const borderX = Math.round(w * 0.03);
-  const borderY = Math.round(h * 0.03);
-  
-  const labels = new Int32Array(w * h);
-  let nextLabel = 1;
-  const labelSizes = {};
-  
-  // Flat stack to prevent JS call stack overflows during DFS/BFS operations
-  const stack = new Int32Array(w * h);
-
-  for (let y = borderY; y < h - borderY; y++) {
-    for (let x = borderX; x < w - borderX; x++) {
-      const startIdx = y * w + x;
+      // Always use Image() fallback. createImageBitmap causes massive RAM spikes on iOS Safari 
+      // when decoding 24MP+ images because WebKit decodes the entire image uncompressed into RAM.
+      const img = new Image();
+      const tempUrl = URL.createObjectURL(file);
       
-      // If it is foreground and not yet labeled
-      if (binary[startIdx] === 255 && labels[startIdx] === 0) {
-        const currentLabel = nextLabel++;
-        let size = 0;
+      img.onload = () => {
+        URL.revokeObjectURL(tempUrl);
+        let { width, height } = img;
         
-        let stackPtr = 0;
-        stack[stackPtr++] = startIdx;
-        labels[startIdx] = currentLabel;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        } else {
+          resolve(file);
+          return;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
         
-        while (stackPtr > 0) {
-          const idx = stack[--stackPtr];
-          size++;
+        canvas.toBlob((blob) => {
+          // CRITICAL: Explicitly zero canvas to instantly drop the GPU memory allocation
+          canvas.width = 0;
+          canvas.height = 0;
+          img.src = ''; // Instantly free the Image source from RAM
           
-          const px = idx % w;
-          const py = Math.floor(idx / w);
-          
-          // Explore 4-connected neighbors
-          const neighbors = [idx - 1, idx + 1, idx - w, idx + w];
-          for (let i = 0; i < neighbors.length; i++) {
-            const nIdx = neighbors[i];
-            const nx = nIdx % w;
-            const ny = Math.floor(nIdx / w);
-            
-            // Stay within border margins and valid boundaries
-            if (nx >= borderX && nx < w - borderX && ny >= borderY && ny < h - borderY) {
-              if (binary[nIdx] === 255 && labels[nIdx] === 0) {
-                labels[nIdx] = currentLabel;
-                stack[stackPtr++] = nIdx;
-              }
-            }
+          if (blob) resolve(blob);
+          else reject(new Error('Canvas to Blob failed'));
+        }, 'image/jpeg', 0.90);
+      };
+      
+      img.onerror = () => {
+        URL.revokeObjectURL(tempUrl);
+        reject(new Error('Failed to load image for downscaling'));
+      };
+      
+      img.src = tempUrl;
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+/**
+ * Processes an image Blob to optimize it for OCR engines handling dot-matrix fonts.
+ * 1. Grayscale
+ * 2. Adaptive Binarization (Otsu-like localized window)
+ * 3. Morphological Dilation (connecting disconnected dot-matrix ink)
+ * @param {Blob} sourceBlob The input image.
+ * @returns {Promise<Blob>} The highly optimized B&W image blob.
+ */
+export async function applyOcrOptimizationFilter(sourceBlob) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(sourceBlob);
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      
+      let w = img.width;
+      let h = img.height;
+      
+      // CRITICAL: Downscale massive camera photos to prevent locking up the UI thread 
+      // during the 5-pass pixel math operations! 1000px is optimal for Tesseract.
+      const MAX_WIDTH = 1000;
+      if (w > MAX_WIDTH) {
+        h = Math.round((MAX_WIDTH / w) * h);
+        w = MAX_WIDTH;
+      }
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      
+      // Draw image to canvas, downscaling automatically if needed
+      ctx.drawImage(img, 0, 0, w, h);
+      
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const data = imgData.data;
+      
+      // 1. Grayscale extraction (luminance)
+      const gray = new Uint8Array(w * h);
+      for (let i = 0; i < data.length; i += 4) {
+        gray[i / 4] = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+      }
+      
+      // 1.5 Contrast Stretching (Histogram Normalization)
+      // We find the 2nd and 98th percentile to ignore extreme outliers like dust or glare
+      const histogram = new Int32Array(256);
+      for (let i = 0; i < gray.length; i++) histogram[gray[i]]++;
+      
+      const totalPixels = w * h;
+      let minGray = 0;
+      let maxGray = 255;
+      
+      let pixelSum = 0;
+      for (let i = 0; i < 256; i++) {
+        pixelSum += histogram[i];
+        if (pixelSum > totalPixels * 0.02) { minGray = i; break; }
+      }
+      
+      pixelSum = 0;
+      for (let i = 255; i >= 0; i--) {
+        pixelSum += histogram[i];
+        if (pixelSum > totalPixels * 0.02) { maxGray = i; break; }
+      }
+      
+      const range = Math.max(1, maxGray - minGray);
+      for (let i = 0; i < gray.length; i++) {
+        let val = gray[i];
+        if (val < minGray) val = minGray;
+        if (val > maxGray) val = maxGray;
+        // Stretch the faded ink to pitch black (0) and the grayish paper to pure white (255)
+        gray[i] = Math.round(((val - minGray) / range) * 255);
+      }
+      
+      // 2. Bradley-Roth Adaptive Binarization (removes shadows/gradients)
+      const S = Math.round(w / 16); 
+      // CRITICAL: Lower threshold to 8% to massively boost sensitivity for faint/dulled gray ink
+      const T = 0.08; 
+      const intImg = new Int32Array(w * h);
+      
+      // Compute the integral image (summed-area table)
+      for (let y = 0; y < h; y++) {
+        let sum = 0;
+        for (let x = 0; x < w; x++) {
+          const idx = y * w + x;
+          sum += gray[idx];
+          if (y === 0) {
+            intImg[idx] = sum;
+          } else {
+            intImg[idx] = intImg[idx - w] + sum;
           }
         }
-        
-        labelSizes[currentLabel] = size;
       }
-    }
-  }
-
-  // Find the largest foreground connected component label
-  let largestLabel = 0;
-  let maxSize = 0;
-  for (const label in labelSizes) {
-    if (labelSizes[label] > maxSize) {
-      maxSize = labelSizes[label];
-      largestLabel = parseInt(label, 10);
-    }
-  }
-
-  // 4. Extract exact document quad corners based on the isolated largest component
-  // TL: minimizes x + y
-  // TR: maximizes x - y
-  // BR: maximizes x + y
-  // BL: minimizes x - y
-  let minSum = Infinity, tl = { x: 0.12, y: 0.12 };
-  let maxDiff = -Infinity, tr = { x: 0.88, y: 0.12 };
-  let maxSum = -Infinity, br = { x: 0.88, y: 0.88 };
-  let minDiff = Infinity, bl = { x: 0.12, y: 0.88 };
-
-  const minAcceptableSize = w * h * 0.05; // Fallback if document is less than 5% of screen
-  
-  if (largestLabel > 0 && maxSize >= minAcceptableSize) {
-    for (let y = borderY; y < h - borderY; y++) {
-      for (let x = borderX; x < w - borderX; x++) {
-        const idx = y * w + x;
-        if (labels[idx] === largestLabel) {
-          const sum = x + y;
-          const diff = x - y;
-
-          if (sum < minSum) {
-            minSum = sum;
-            tl = { x: x / w, y: y / h };
-          }
-          if (diff > maxDiff) {
-            maxDiff = diff;
-            tr = { x: x / w, y: y / h };
-          }
-          if (sum > maxSum) {
-            maxSum = sum;
-            br = { x: x / w, y: y / h };
-          }
-          if (diff < minDiff) {
-            minDiff = diff;
-            bl = { x: x / w, y: y / h };
+      
+      const binary = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const idx = y * w + x;
+          
+          const x1 = Math.max(0, x - Math.floor(S / 2));
+          const x2 = Math.min(w - 1, x + Math.floor(S / 2));
+          const y1 = Math.max(0, y - Math.floor(S / 2));
+          const y2 = Math.min(h - 1, y + Math.floor(S / 2));
+          
+          const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+          
+          let sum = intImg[y2 * w + x2];
+          if (x1 > 0) sum -= intImg[y2 * w + (x1 - 1)];
+          if (y1 > 0) sum -= intImg[(y1 - 1) * w + x2];
+          if (x1 > 0 && y1 > 0) sum += intImg[(y1 - 1) * w + (x1 - 1)];
+          
+          if (gray[idx] * count < sum * (1.0 - T)) {
+            binary[idx] = 0; // Black text
+          } else {
+            binary[idx] = 255; // White background
           }
         }
       }
-    }
-  } else {
-    // Return standard preset layout boundaries if no valid paper block is isolated
-    const inset = 0.12;
-    return [
-      { x: inset, y: inset },
-      { x: 1.0 - inset, y: inset },
-      { x: 1.0 - inset, y: 1.0 - inset },
-      { x: inset, y: 1.0 - inset }
-    ];
-  }
 
-  // 5. Apply a high-end 1.5% inset polish
-  // Pushing corners slightly inside the detected paper limits prevents dark desk pixels from leaking on the scan borders.
-  const insetFactor = 0.015;
-  const finalCorners = [
-    { x: tl.x + insetFactor, y: tl.y + insetFactor },
-    { x: tr.x - insetFactor, y: tr.y + insetFactor },
-    { x: br.x - insetFactor, y: br.y - insetFactor },
-    { x: bl.x + insetFactor, y: bl.y - insetFactor }
-  ];
+      // 3. Morphological Dilation
+      // For any black pixel (0), we turn its immediate surrounding neighbors black.
+      // This bridges the gaps in dot-matrix letters!
+      const dilated = new Uint8Array(w * h);
+      // Pre-fill with white
+      for (let i = 0; i < dilated.length; i++) dilated[i] = 255;
+      
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const idx = y * w + x;
+          if (binary[idx] === 0) {
+            // Text pixel! Dilate to the 8 neighbors
+            dilated[idx] = 0;
+            dilated[idx - 1] = 0; // left
+            dilated[idx + 1] = 0; // right
+            dilated[idx - w] = 0; // top
+            dilated[idx + w] = 0; // bottom
+            dilated[idx - w - 1] = 0; // top-left
+            dilated[idx - w + 1] = 0; // top-right
+            dilated[idx + w - 1] = 0; // bottom-left
+            dilated[idx + w + 1] = 0; // bottom-right
+          }
+        }
+      }
 
-  return finalCorners;
+      // 4. Write back to Canvas
+      for (let i = 0; i < dilated.length; i++) {
+        const val = dilated[i];
+        data[i * 4] = val;
+        data[i * 4 + 1] = val;
+        data[i * 4 + 2] = val;
+        data[i * 4 + 3] = 255;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      
+      canvas.toBlob((b) => {
+        // Purge memory
+        canvas.width = 0;
+        canvas.height = 0;
+        resolve(b);
+      }, 'image/jpeg', 0.95);
+    };
+    
+    img.onerror = () => reject(new Error('Failed to load image for OCR optimization'));
+    
+    img.src = url; // Actually trigger the load!
+  });
 }

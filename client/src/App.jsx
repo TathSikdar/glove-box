@@ -150,6 +150,24 @@ export default function App() {
   };
 
   /**
+   * Deletes a fuel log entry by ID and updates state.
+   * @param {number} id Fuel log ID.
+   */
+  const handleFuelDelete = async (id) => {
+    try {
+      const res = await fetch(`/api/fuel/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setFuelLogs(fuelLogs.filter((f) => f.id !== id));
+        fetchStats(activeCarId);
+      } else {
+        console.error('Failed to delete fuel log');
+      }
+    } catch (err) {
+      console.error('Network error deleting fuel log:', err);
+    }
+  };
+
+  /**
    * Fetches all records from database, ordered by mileage desc, scoped by vehicle.
    * @param {number} carId The active vehicle ID.
    */
@@ -600,18 +618,18 @@ export default function App() {
               }}
               disabled={activeCarId === null}
             >
-              Fuel
+              + Fuel
             </button>
             <button
               type="button"
-              className={`nav-tab nav-tab-primary ${view === 'add' ? 'active' : ''}`}
+              className={`nav-tab ${view === 'add' ? 'active' : ''}`}
               onClick={() => {
                 setEditRecordTarget(null);
                 setView('add');
               }}
               disabled={activeCarId === null}
             >
-              Log Entry
+              + Service
             </button>
           </nav>
         </div>
@@ -645,7 +663,9 @@ export default function App() {
             {view === 'logs' && activeCarId !== null && (
               <RecordList
                 records={records}
+                fuelLogs={fuelLogs}
                 onDelete={handleRecordDelete}
+                onDeleteFuel={handleFuelDelete}
                 onEdit={triggerEditView}
               />
             )}
