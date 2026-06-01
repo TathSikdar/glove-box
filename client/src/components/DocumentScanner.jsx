@@ -469,11 +469,23 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
 
         const widthTLTR = Math.hypot(rawQuad[0].x - rawQuad[1].x, rawQuad[0].y - rawQuad[1].y);
         const widthBLBR = Math.hypot(rawQuad[3].x - rawQuad[2].x, rawQuad[3].y - rawQuad[2].y);
-        const destW = Math.max(500, Math.round(Math.max(widthTLTR, widthBLBR)));
+        let destW = Math.max(500, Math.round(Math.max(widthTLTR, widthBLBR)));
 
         const heightTLBL = Math.hypot(rawQuad[0].x - rawQuad[3].x, rawQuad[0].y - rawQuad[3].y);
         const heightTRBR = Math.hypot(rawQuad[1].x - rawQuad[2].x, rawQuad[1].y - rawQuad[2].y);
-        const destH = Math.max(700, Math.round(Math.max(heightTLBL, heightTRBR)));
+        let destH = Math.max(700, Math.round(Math.max(heightTLBL, heightTRBR)));
+
+        // Compress image resolution before warping (dramatically improves speed & reduces file size)
+        const maxDim = 1200;
+        if (destW > maxDim || destH > maxDim) {
+          if (destW > destH) {
+            destH = Math.round((destH * maxDim) / destW);
+            destW = maxDim;
+          } else {
+            destW = Math.round((destW * maxDim) / destH);
+            destH = maxDim;
+          }
+        }
 
         let warpedData = warpPerspective(img, rawQuad, destW, destH);
 
@@ -497,7 +509,7 @@ export default function DocumentScanner({ imageSrc, onSave, onCancel }) {
           } else {
             reject(new Error('Failed to create blob from scan segment.'));
           }
-        }, 'image/jpeg', 0.90);
+        }, 'image/jpeg', 0.80);
 
       } catch (err) {
         reject(err);
